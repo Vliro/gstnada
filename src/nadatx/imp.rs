@@ -10,7 +10,7 @@ use std::os::raw::c_char;
 use std::{ptr, time};
 use std::sync::Mutex;
 use bitreader::BitReader;
-use gstreamer::{info, log, trace};
+use gstreamer::{error, info, log, trace};
 
 use gstreamer_video as gstv;
 
@@ -122,11 +122,15 @@ impl Nadatx {
         );
         drop(rtp_buffer);
         let mut rate: u32 = 0;
-        let mut force_idr: u32 = 0;
+        let mut force_idr: u32 = 1;
+        let ok;
         unsafe {
             let size = buffer.size().try_into().unwrap();
-            OnPacket(self.controller, timestamp as u64, seq, size);
+            ok = OnPacket(self.controller, timestamp as u64, seq, size);
             rate = getBitrate(self.controller) as u32;
+        }
+        if !ok {
+            error!(CAT, obj: element, "Errored in OnPacket in NadaTx::sink_chain");
         }
         if rate != 0 {
             let mut settings = self.settings.lock().unwrap();
