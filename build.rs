@@ -1,7 +1,7 @@
 fn main() {
     gst_plugin_version_helper::info();
 
-    cc::Build::new().files(
+    cc::Build::new().cpp(true).files(
         [
             "nada/sender-based-controller.cc",
             "nada/nada-controller.cc",

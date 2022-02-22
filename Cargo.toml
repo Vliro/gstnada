@@ -27,13 +27,13 @@ argparse = "0.2.2"
 bitreader = "0.3.5"
 
 [lib]
-name = "gstscream"
+name = "gstnada"
 crate-type = ["cdylib", "rlib", "staticlib"]
 path = "src/lib.rs"
 
-#[[bin]]
-#name="scream_sender"
-#path="src/sender.rs"
+[[bin]]
+name="scream_sender"
+path="src/sender.rs"
 
 #[[bin]]
 #name="scream_receiver"

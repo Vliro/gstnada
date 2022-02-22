@@ -6,15 +6,13 @@ use gst::subclass::prelude::*;
 
 use std::convert::TryInto;
 use std::ffi::CString;
-use std::os::raw::c_char;
-use std::{ptr, time};
+use std::time;
 use std::sync::Mutex;
 use bitreader::BitReader;
 use gstreamer::{error, info, log, trace};
 
 use gstreamer_video as gstv;
 
-use crate::glib::ParamSpec;
 
 pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
@@ -25,6 +23,7 @@ use crate::gst;
 
 const DEFAULT_CURRENT_MAX_BITRATE: u32 = 0;
 
+#[repr(C)]
 #[derive(Copy, Clone)]
 pub (crate) struct NadaController(*const std::ffi::c_void);
 unsafe impl Sync for NadaController {}
@@ -45,11 +44,11 @@ impl Default for Settings {
     }
 }
 
-// static STREAMTX_PTR: Option<&Nadatx>  = None;
+// static STREAMTX_PTR: Option<&nadatx>  = None;
 
 // Struct containing all the element data
 #[repr(C)]
-pub struct Nadatx {
+pub struct nadatx {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
     rtcp_srcpad: gst::Pad,
@@ -60,15 +59,15 @@ pub struct Nadatx {
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
-        "Nadatx",
+        "nadatx",
         gst::DebugColorFlags::empty(),
-        Some("Nadatx Element"),
+        Some("nadatx Element"),
     )
 });
 
 
 
-impl Drop for Nadatx {
+impl Drop for nadatx {
     fn drop(&mut self) {
         unsafe {
            FreeController(self.controller);
@@ -91,7 +90,7 @@ impl Feedback {
     }
 }
 
-impl Nadatx {
+impl nadatx {
     // Called whenever a new buffer is passed to our sink pad. Here buffers should be processed and
     // whenever some output buffer is available have to push it out of the source pad.
     // Here we just pass through all buffers directly
@@ -101,7 +100,7 @@ impl Nadatx {
     fn sink_chain(
         &self,
         pad: &gst::Pad,
-        element: &super::Nadatx,
+        element: &super::nadatx,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         // trace!(CAT, obj: pad, "gstnada Handling buffer {:?}", buffer);
@@ -109,8 +108,8 @@ impl Nadatx {
         let seq = rtp_buffer.seq();
         let payload_type = rtp_buffer.payload_type();
         let timestamp = rtp_buffer.timestamp();
-        let ssrc = rtp_buffer.ssrc();
-        let marker = rtp_buffer.is_marker() as u8;
+        let _ssrc = rtp_buffer.ssrc();
+        let _marker = rtp_buffer.is_marker() as u8;
 
         trace!(
             CAT,
@@ -149,7 +148,7 @@ impl Nadatx {
                 .all_headers(true)
                 .build();
             let rc = self.sinkpad.push_event(event);
-            println!("imp.rs: force_idr rc {} enabled 1 ", rc);
+            //println!("imp.rs: force_idr rc {} enabled 1 ", rc);
         }
         glib::bitflags::_core::result::Result::Ok(gst::FlowSuccess::Ok)
     }
@@ -161,7 +160,7 @@ impl Nadatx {
     //
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
-    fn sink_event(&self, pad: &gst::Pad, _element: &super::Nadatx, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, _element: &super::nadatx, event: gst::Event) -> bool {
         log!(
             CAT,
             obj: pad,
@@ -185,7 +184,7 @@ impl Nadatx {
     fn sink_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        _element: &super::nadatx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(CAT, obj: pad, "gstnada Handling query {:?}", query);
@@ -195,7 +194,7 @@ impl Nadatx {
     fn rtcp_sink_chain(
         &self,
         pad: &gst::Pad,
-        element: &super::Nadatx,
+        element: &super::nadatx,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         // trace!(CAT, obj: pad, "gstnada Handling buffer {:?}", buffer);
@@ -265,14 +264,10 @@ impl Nadatx {
             let offset = reader.read_u8(8).unwrap();
             cur_time = cur_time + offset as u32;
             x.ts = cur_time as u64;
+            ok &= unsafe {OnFeedback(self.controller, since_the_epoch,base_seq,x.ts, x.ecn);}
         }
-
-        for x in ecn_list {
-            unsafe {
-                ok &= OnFeedback(self.controller, since_the_epoch,base_seq,x.ts, x.ecn);
-            }
-        }
-        info!(CAT, obj: element, "Nadatx parsed {} bytes", (reader.position() >> 3));
+        
+        info!(CAT, obj: element, "nadatx parsed {} bytes", (reader.position() >> 3));
         drop(bmr);
        // if res == 0 {
         self.rtcp_srcpad.push(buffer).unwrap();
@@ -290,7 +285,7 @@ impl Nadatx {
     fn rtcp_sink_event(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        _element: &super::nadatx,
         event: gst::Event,
     ) -> bool {
         log!(
@@ -315,7 +310,7 @@ impl Nadatx {
     fn rtcp_sink_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        _element: &super::nadatx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(
@@ -335,7 +330,7 @@ impl Nadatx {
     //
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
-    fn src_event(&self, pad: &gst::Pad, _element: &super::Nadatx, event: gst::Event) -> bool {
+    fn src_event(&self, pad: &gst::Pad, _element: &super::nadatx, event: gst::Event) -> bool {
         log!(
             CAT,
             obj: pad,
@@ -349,7 +344,7 @@ impl Nadatx {
     fn rtcp_src_event(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        _element: &super::nadatx,
         event: gst::Event,
     ) -> bool {
         log!(
@@ -375,7 +370,7 @@ impl Nadatx {
     fn src_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        _element: &super::nadatx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(CAT, obj: pad, "gstnada Handling src query {:?}", query);
@@ -384,7 +379,7 @@ impl Nadatx {
     fn rtcp_src_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        _element: &super::nadatx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(
@@ -397,7 +392,7 @@ impl Nadatx {
     }
 }
 #[allow(improper_ctypes_definitions)]
-extern "C" fn callback(stx: *const Nadatx, buf: gst::Buffer, is_push: u8) {
+extern "C" fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
     trace!(
         CAT,
         "gstnada Handling buffer from scream {:?} is_push  {}",
@@ -409,16 +404,16 @@ extern "C" fn callback(stx: *const Nadatx, buf: gst::Buffer, is_push: u8) {
             let fls = (*stx).srcpad.pad_flags();
             //            if fls.contains(gst::PadFlags::FLUSHING) || fls.contains(gst::PadFlags::EOS)
             if fls.contains(gst::PadFlags::EOS) {
-                println!("Nadatx EOS {:?}", fls);
+                println!("nadatx EOS {:?}", fls);
                 drop(buf);
             } else if fls.contains(gst::PadFlags::FLUSHING) {
-                println!("Nadatx FL {:?}", fls);
+                println!("nadatx FL {:?}", fls);
                 drop(buf);
             } else {
                 (*stx)
                     .srcpad
                     .push(buf)
-                    .expect("Nadatx callback srcpad.push failed");
+                    .expect("nadatx callback srcpad.push failed");
             }
         }
     } else {
@@ -427,7 +422,7 @@ extern "C" fn callback(stx: *const Nadatx, buf: gst::Buffer, is_push: u8) {
 }
 
 #[link(name = "nada")]
-extern "C" {
+extern {
     fn NewController() -> NadaController;
     fn FreeController(c: NadaController);
     fn OnFeedback(c: NadaController, nowUs: u64, seq: u16, ts: u64, ecn: u8) -> bool;
@@ -439,9 +434,9 @@ extern "C" {
 // provides the entry points for creating a new instance and setting
 // up the class data
 #[glib::object_subclass]
-impl ObjectSubclass for Nadatx {
+impl ObjectSubclass for nadatx {
     const NAME: &'static str = "Rsnadatx";
-    type Type = super::Nadatx;
+    type Type = super::nadatx;
     type ParentType = gst::Element;
 
     // Called when a new instance is to be created. We need to return an instance
@@ -454,30 +449,30 @@ impl ObjectSubclass for Nadatx {
         // - Catch panics from the pad functions and instead of aborting the process
         //   it will simply convert them into an error message and poison the element
         //   instance
-        // - Extract our Nadatx struct from the object instance and pass it to us
+        // - Extract our nadatx struct from the object instance and pass it to us
         //
         // Details about what each function is good for is next to each function definition
         let templ = klass.pad_template("sink").unwrap();
         let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
             .chain_function(|pad, parent, buffer| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |Nadatx, element| Nadatx.sink_chain(pad, element, buffer),
+                    |nadatx, element| nadatx.sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.sink_event(pad, element, event),
+                    |nadatx, element| nadatx.sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.sink_query(pad, element, query),
+                    |nadatx, element| nadatx.sink_query(pad, element, query),
                 )
             })
             .build();
@@ -485,24 +480,24 @@ impl ObjectSubclass for Nadatx {
         let templ = klass.pad_template("rtcp_sink").unwrap();
         let rtcp_sinkpad = gst::Pad::builder_with_template(&templ, Some("rtcp_sink"))
             .chain_function(|pad, parent, buffer| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |Nadatx, element| Nadatx.rtcp_sink_chain(pad, element, buffer),
+                    |nadatx, element| nadatx.rtcp_sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.rtcp_sink_event(pad, element, event),
+                    |nadatx, element| nadatx.rtcp_sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.rtcp_sink_query(pad, element, query),
+                    |nadatx, element| nadatx.rtcp_sink_query(pad, element, query),
                 )
             })
             .build();
@@ -510,17 +505,17 @@ impl ObjectSubclass for Nadatx {
         let templ = klass.pad_template("src").unwrap();
         let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
             .event_function(|pad, parent, event| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.src_event(pad, element, event),
+                    |nadatx, element| nadatx.src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.src_query(pad, element, query),
+                    |nadatx, element| nadatx.src_query(pad, element, query),
                 )
             })
             .build();
@@ -528,17 +523,17 @@ impl ObjectSubclass for Nadatx {
         let templ = klass.pad_template("rtcp_src").unwrap();
         let rtcp_srcpad = gst::Pad::builder_with_template(&templ, Some("rtcp_src"))
             .event_function(|pad, parent, event| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.rtcp_src_event(pad, element, event),
+                    |nadatx, element| nadatx.rtcp_src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadatx::catch_panic_pad_function(
+                nadatx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Nadatx, element| Nadatx.rtcp_src_query(pad, element, query),
+                    |nadatx, element| nadatx.rtcp_src_query(pad, element, query),
                 )
             })
             .build();
@@ -564,13 +559,13 @@ impl ObjectSubclass for Nadatx {
 }
 
 // Implementation of glib::Object virtual methods
-impl ObjectImpl for Nadatx {
+impl ObjectImpl for nadatx {
     // Called right after construction of a new instance
     fn constructed(&self, obj: &Self::Type) {
         // Call the parent class' ::constructed() implementation first
         self.parent_constructed(obj);
 
-        // Here we actually add the pads we created in Nadatx::new() to the
+        // Here we actually add the pads we created in nadatx::new() to the
         // element so that GStreamer is aware of their existence.
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.rtcp_sinkpad).unwrap();
@@ -594,21 +589,21 @@ impl ObjectImpl for Nadatx {
                 glib::ParamSpecString::new(
                     "stats",
                     "Stats",
-                    "Nadatx get_property lib stats in csv format",
+                    "nadatx get_property lib stats in csv format",
                     None,
                     glib::ParamFlags::READWRITE,
                 ),
                 glib::ParamSpecString::new(
                     "stats-clear",
                     "StatsClear",
-                    "Nadatx get_property lib stats in csv format and clear counters",
+                    "nadatx get_property lib stats in csv format and clear counters",
                     None,
                     glib::ParamFlags::READWRITE,
                 ),
                 glib::ParamSpecString::new(
                     "stats-header",
                     "StatsHeader",
-                    "Nadatx get_property lib stats-header in csv format",
+                    "nadatx get_property lib stats-header in csv format",
                     None,
                     glib::ParamFlags::READWRITE,
                 ),
@@ -727,8 +722,8 @@ impl ObjectImpl for Nadatx {
 }
 
 // Implementation of gst::Element virtual methods
-impl GstObjectImpl for Nadatx {}
-impl ElementImpl for Nadatx {
+impl GstObjectImpl for nadatx {}
+impl ElementImpl for nadatx {
     // Set the element specific metadata. This information is what
     // is visible from gst-inspect-1.0 and can also be programatically
     // retrieved from the gst::Registry after initial registration
@@ -736,9 +731,9 @@ impl ElementImpl for Nadatx {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
             gst::subclass::ElementMetadata::new(
-                "Nadatx",
+                "nadatx",
                 "Generic",
-                "pass RTP packets to Nadatx",
+                "pass RTP packets to nadatx",
                 "Jacob Teplitsky <jacob.teplitsky@ericsson.com>",
             )
         });

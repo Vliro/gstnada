@@ -143,6 +143,7 @@ bool NadaController::processSendPacket(uint64_t txTimestampUs,
                                        uint16_t sequence,
                                        uint32_t size) { // in Bytes
     /* First of all, call the superclass */
+    //printf("Received on packet, TS: %lu, seq: %d, size: %d\n", txTimestampUs, sequence, size);
     if (!SenderBasedController::processSendPacket(txTimestampUs, sequence, size)) {
         return false;
     }

@@ -33,13 +33,13 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 // license of the plugin, source package name, binary package name, origin where it comes from
 // and the date/time of release.
 plugin_define!(
-    scream,
+    nadatx,
     env!("CARGO_PKG_DESCRIPTION"),
     plugin_init,
     concat!(env!("CARGO_PKG_VERSION"), "-", env!("COMMIT_ID")),
     "Proprietary",
     env!("CARGO_PKG_NAME"),
     env!("CARGO_PKG_NAME"),
-    env!("CARGO_PKG_REPOSITORY"),
+    "Github",
     env!("BUILD_REL_DATE")
 );
