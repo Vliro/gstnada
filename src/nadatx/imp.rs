@@ -191,7 +191,7 @@ impl Nadatx {
     fn rtcp_sink_chain(
         &self,
         pad: &gst::Pad,
-        _element: &super::Nadatx,
+        element: &super::Nadatx,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         // trace!(CAT, obj: pad, "gstnada Handling buffer {:?}", buffer);
@@ -258,14 +258,17 @@ impl Nadatx {
         let mut cur_time = ref_time;
         let mut ok = true;
         for x in ecn_list.iter_mut().filter(|t| t.ecn == 1) {
-            let offset = reader.read_u8(8);
-            cur_time = cur_time + offset;
+            let offset = reader.read_u8(8).unwrap();
+            cur_time = cur_time + offset as u32;
             x.ts = cur_time as u64;
+        }
+
+        for x in ecn_list {
             unsafe {
                 ok &= OnFeedback(self.controller, since_the_epoch,base_seq,x.ts, x.ecn);
             }
         }
-        info!("Nadatx parsed {} bytes", reader.position() >> 3);
+        info!(CAT, obj: element, "Nadatx parsed {} bytes", (reader.position() >> 3));
         drop(bmr);
        // if res == 0 {
         self.rtcp_srcpad.push(buffer).unwrap();
