@@ -74,17 +74,20 @@ impl Drop for nadatx {
         }
     }
 }
+#[derive(Debug)]
 pub (crate) struct Feedback {
     ecn: u8,
+    seq: u16,
     ts: u64
 }
 //        uint16_t sequence;
 //         uint64_t rxTimestampUs;
 //         uint8_t ecn;
 impl Feedback {
-    pub fn new(ecn: u8) -> Feedback {
+    pub fn new(ecn: u8, seq: u16) -> Feedback {
         Feedback {
             ecn,
+            seq,
             ts: 0
         }
     }
@@ -207,69 +210,19 @@ impl nadatx {
             "gstnada Handling rtcp buffer size {} ",
             buffer_size
         );
-        let mut reader = BitReader::new(bmrsl);
-        let _v = reader.read_u8(2).unwrap();
-        assert_eq!(_v, 2);
-        let padding = reader.read_u8(1).unwrap();
-        let _fmt = reader.read_u8(5).unwrap();
-        assert_eq!(_fmt, 15);
-        let _pt = reader.read_u8(8).unwrap();
-        assert_eq!(_pt, 205);
-        let length = reader.read_u16(16).unwrap();
-        let ssrc_send = reader.read_u32(32).unwrap();
-        let ssrc_media = reader.read_u32(32).unwrap();
-        let base_seq = reader.read_u16(16).unwrap();
-        let packet_status = reader.read_u16(16).unwrap();
-        let ref_time = reader.read_u32(24).unwrap();
-        let fb_pkt_count = reader.read_u32(8).unwrap();
 
-        let mut ecn_list: Vec<Feedback> = Vec::with_capacity(fb_pkt_count as usize);
-
-        let mut recv_blocks = 0;
-
-        for _ in 1..fb_pkt_count {
-            let pkt_type = reader.read_u8(1).unwrap();
-            match pkt_type {
-                0 => {
-                    let ecn = reader.read_u8(2).unwrap();
-                    for _ in 1..reader.read_u8(13).unwrap() {
-                        ecn_list.push(Feedback::new(ecn));
-                    }
-                },
-                1 => {
-                    let sym_size = reader.read_u8(1).unwrap();
-                    match sym_size {
-                        0 => {
-                            for _ in 1..14 {
-                                ecn_list.push(Feedback::new(reader.read_u8(1).unwrap()));
-                            }
-                        },
-                        1 => {
-                            for _ in 1..7 {
-                                ecn_list.push(Feedback::new(reader.read_u8(2).unwrap()));
-                            }
-                        },
-                        _ => panic!("unexpect sym_size {}", sym_size)
-                    }
-                }
-                _ => panic!("unexpected pkt_type {}", pkt_type)
-            }
-        }
+        let (data, count) = parse_twcc(bmrsl);
         let since_the_epoch = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .expect("Time went backwards").as_micros() as u64;
-        let mut cur_time = ref_time;
         let mut ok = true;
-        for x in ecn_list.iter_mut().filter(|t| t.ecn == 1) {
-            let offset = reader.read_u8(8).unwrap();
-            cur_time = cur_time + offset as u32;
-            x.ts = cur_time as u64;
+        for x in data {
             unsafe {
-                ok &= OnFeedback(self.controller, since_the_epoch,base_seq,x.ts, x.ecn);
+                ok &= OnFeedback(self.controller, since_the_epoch, x.seq,x.ts, x.ecn);
             }
         }
 
-        info!(CAT, obj: element, "nadatx parsed {} bytes", (reader.position() >> 3));
+        info!(CAT, obj: element, "nadatx parsed {} bytes", count);
         drop(bmr);
        // if res == 0 {
         self.rtcp_srcpad.push(buffer).unwrap();
@@ -393,6 +346,79 @@ impl nadatx {
         self.rtcp_sinkpad.peer_query(query)
     }
 }
+
+pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
+    let mut reader = BitReader::new(data);
+    let _v = reader.read_u8(2).unwrap();
+    assert_eq!(_v, 2);
+    let padding = reader.read_u8(1).unwrap();
+    let _fmt = reader.read_u8(5).unwrap();
+    assert_eq!(_fmt, 15);
+    let _pt = reader.read_u8(8).unwrap();
+    assert_eq!(_pt, 205);
+    let length = reader.read_u16(16).unwrap();
+    let ssrc_send = reader.read_u32(32).unwrap();
+    let ssrc_media = reader.read_u32(32).unwrap();
+    let base_seq = reader.read_u16(16).unwrap();
+    let packet_status = reader.read_u16(16).unwrap();
+    let ref_time = reader.read_u32(24).unwrap() << 6;
+    let fb_pkt_count = reader.read_u32(8).unwrap();
+
+    let mut ecn_list: Vec<Feedback> = Vec::with_capacity(fb_pkt_count as usize);
+
+    let mut recv_blocks = 0;
+    for _ in 0..fb_pkt_count {
+        let pkt_type = reader.read_u8(1).unwrap();
+        match pkt_type {
+            0 => {
+                let ecn = reader.read_u8(2).unwrap();
+                let cnt = reader.read_u16(13).unwrap();
+                for _ in 0..cnt {
+                    ecn_list.push(Feedback::new(ecn, base_seq));
+                }
+            },
+            1 => {
+                let sym_size = reader.read_u8(1).unwrap();
+                match sym_size {
+                    0 => {
+                        for _ in 0..14 {
+                            ecn_list.push(Feedback::new(reader.read_u8(1).unwrap(), base_seq));
+                        }
+                    },
+                    1 => {
+                        for _ in 1..7 {
+                            ecn_list.push(Feedback::new(reader.read_u8(2).unwrap(), base_seq));
+                        }
+                    },
+                    _ => panic!("unexpect sym_size {}", sym_size)
+                }
+            }
+            _ => panic!("unexpected pkt_type {}", pkt_type)
+        }
+    }
+    let mut cur_time = ref_time;
+    for x in ecn_list.iter_mut().filter(|t| t.ecn == 1 || t.ecn == 2) {
+        match x.ecn {
+            1 => {
+                let mut offset = reader.read_u8(8).unwrap();
+                // in millis, 250 µs -> 0.25ms -> 1 /4 -> >> 2
+                offset = offset >> 2;
+                cur_time = cur_time + offset as u32;
+                x.ts = cur_time as u64;
+            },
+            2 => {
+                let mut offset = reader.read_u16(16).unwrap();
+                // in millis, 250 µs -> 0.25s -> 1 /4 -> >> 2
+                offset = offset >> 2;
+                cur_time = cur_time + offset as u32;
+                x.ts = cur_time as u64;
+            },
+            _ => unreachable!()
+        }
+    }
+    (ecn_list, reader.position() >> 3)
+}
+
 #[allow(improper_ctypes_definitions)]
 extern "C" fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
     trace!(
@@ -427,8 +453,8 @@ extern "C" fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
 extern {
     fn NewController() -> NadaController;
     fn FreeController(c: NadaController);
-    fn OnFeedback(c: NadaController, nowUs: u64, seq: u16, ts: u64, ecn: u8) -> bool;
-    fn OnPacket(c: NadaController, nowUs: u64, seq: u16, size: u32) -> bool;
+    fn OnFeedback(c: NadaController, now_us: u64, seq: u16, ts: u64, ecn: u8) -> bool;
+    fn OnPacket(c: NadaController, now_us: u64, seq: u16, size: u32) -> bool;
     fn getBitrate(c: NadaController) -> f32;
 }
 

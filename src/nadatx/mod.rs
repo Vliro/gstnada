@@ -3,6 +3,7 @@ use crate::gst;
 use crate::gst::Element;
 
 mod imp;
+mod twcc_test;
 
 // The public Rust wrapper type for our element
 glib::wrapper! {
