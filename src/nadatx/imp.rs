@@ -264,9 +264,11 @@ impl nadatx {
             let offset = reader.read_u8(8).unwrap();
             cur_time = cur_time + offset as u32;
             x.ts = cur_time as u64;
-            ok &= unsafe {OnFeedback(self.controller, since_the_epoch,base_seq,x.ts, x.ecn);}
+            unsafe {
+                ok &= OnFeedback(self.controller, since_the_epoch,base_seq,x.ts, x.ecn);
+            }
         }
-        
+
         info!(CAT, obj: element, "nadatx parsed {} bytes", (reader.position() >> 3));
         drop(bmr);
        // if res == 0 {
