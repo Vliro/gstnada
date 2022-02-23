@@ -5,8 +5,11 @@
 #include "nada-controller.h"
 using rmcat::NadaController;
 extern "C" {
-NadaController* NewController() {
-    return new NadaController();
+NadaController* NewController(int32_t minbw, int32_t maxbw) {
+    NadaController* controller = new NadaController();
+    controller->setMinBw(static_cast<float>(minbw*1000));
+    controller->setMaxBw(static_cast<float>(maxbw*1000));
+    return controller;
 }
 
 void FreeController(NadaController* c) {

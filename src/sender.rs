@@ -1,18 +1,25 @@
 use failure::Error;
-use std::env;
+use std::{env, thread};
+use std::fmt::Debug;
 
 extern crate argparse;
 extern crate failure;
 extern crate gstreamer_video as gstv;
 #[macro_use]
 extern crate lazy_static;
-
+use gstreamer::traits::ClockExt;
 use crate::gst::glib::Cast;
 
 use crate::gstv::prelude::ElementExt;
 use crate::gstv::prelude::GstObjectExt;
 
 use argparse::{ArgumentParser, StoreOption, StoreTrue};
+use glib::{ObjectExt, StaticType};
+use gst::{Clock, ClockTime, PeriodicClockId, SystemClock};
+use gst::Format::Default;
+use gst::prelude::{ClockExtManual, GstBinExt};
+use gstreamer_sys::{gst_clock_id_wait, gst_clock_new_periodic_id, GstBin, GstClock};
+use gtypes::guint;
 
 extern crate gstreamer as gst;
 
@@ -46,6 +53,9 @@ pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
     let pls = env::var("SENDPIPELINE").unwrap();
     println!("Pipeline: {}", pls);
     let pipeline = gst::parse_launch(&pls).unwrap();
+    //let clock = pipeline_el.clock();
+    let time_id = SystemClock::obtain().new_periodic_id(SystemClock::obtain().time().unwrap(), ClockTime::from_mseconds(100));
+
     let pipeline = pipeline.downcast::<gst::Pipeline>().unwrap();
 
     pipeline
@@ -89,6 +99,21 @@ pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
         glib::Continue(true)
     })
     .expect("failed to add bus watch");
+    let p = pipeline_clone.clone();
+    thread::spawn(move || {
+        let bin = p.dynamic_cast_ref::<gst::Bin>().unwrap();
+        loop {
+            time_id.wait();
+            let el = bin.by_name_recurse_up("nadatx").unwrap();
+            let video = bin.by_name_recurse_up("video").unwrap();
+            let prop = el.property::<u32>("current-max-bitrate");
+            //if prop > 0 {
+            //    video.set_property("bitrate", 1000 as guint);
+            //}
+            //println!("Bandwidth {}",prop);
+           // println!("Video bandwidth {}",video.property::<u32>("bitrate"));
+        }
+    });
 
     main_loop.run();
     pipeline_clone

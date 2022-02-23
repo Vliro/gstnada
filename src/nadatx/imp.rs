@@ -1,4 +1,5 @@
 use glib::prelude::*;
+use glib::subclass::{Signal, SignalType};
 use glib::subclass::prelude::*;
 
 use gst::prelude::*;
@@ -6,10 +7,12 @@ use gst::subclass::prelude::*;
 
 use std::convert::TryInto;
 use std::ffi::CString;
-use std::time;
-use std::sync::Mutex;
+use std::{thread, time};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use bitreader::BitReader;
-use gstreamer::{error, info, log, trace};
+use gstreamer::{debug, error, info, log, trace};
 
 use gstreamer_video as gstv;
 
@@ -35,6 +38,10 @@ struct Settings {
     current_max_bitrate: u32,
 }
 
+struct SendPtr (*const nadatx);
+
+unsafe impl Send for SendPtr {}
+
 impl Default for Settings {
     fn default() -> Self {
         Settings {
@@ -54,6 +61,7 @@ pub struct nadatx {
     rtcp_srcpad: gst::Pad,
     rtcp_sinkpad: gst::Pad,
     settings: Mutex<Settings>,
+    data: Mutex<VecDeque<gst::Buffer>>,
     controller: NadaController
 }
 
@@ -113,7 +121,7 @@ impl nadatx {
         let timestamp = rtp_buffer.timestamp();
         let _ssrc = rtp_buffer.ssrc();
         let _marker = rtp_buffer.is_marker() as u8;
-
+        //println!("sink chain");
         trace!(
             CAT,
             obj: pad,
@@ -131,7 +139,12 @@ impl nadatx {
             ok = OnPacket(self.controller, timestamp as u64, seq, size);
             rate = getBitrate(self.controller) as u32;
         }
-        if !ok {
+        debug!(
+            CAT,
+            obj: pad,
+            "NadaTX current estimate bitrate {}",
+            rate,
+        );        if !ok {
             error!(CAT, obj: element, "Errored in OnPacket in NadaTx::sink_chain");
         }
         if rate != 0 {
@@ -146,6 +159,7 @@ impl nadatx {
                 element.notify("current-max-bitrate");
             }
         }
+        self.data.lock().unwrap().push_back(buffer);
         if force_idr != 0 {
             let event = gstv::UpstreamForceKeyUnitEvent::builder()
                 .all_headers(true)
@@ -419,8 +433,7 @@ pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
     (ecn_list, reader.position() >> 3)
 }
 
-#[allow(improper_ctypes_definitions)]
-extern "C" fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
+fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
     trace!(
         CAT,
         "gstnada Handling buffer from scream {:?} is_push  {}",
@@ -438,6 +451,7 @@ extern "C" fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
                 println!("nadatx FL {:?}", fls);
                 drop(buf);
             } else {
+                //println!("pushing to srcpad");
                 (*stx)
                     .srcpad
                     .push(buf)
@@ -451,7 +465,8 @@ extern "C" fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
 
 #[link(name = "nada")]
 extern {
-    fn NewController() -> NadaController;
+    //In kbps.
+    fn NewController(min: i32, max: i32) -> NadaController;
     fn FreeController(c: NadaController);
     fn OnFeedback(c: NadaController, now_us: u64, seq: u16, ts: u64, ecn: u8) -> bool;
     fn OnPacket(c: NadaController, now_us: u64, seq: u16, size: u32) -> bool;
@@ -572,17 +587,30 @@ impl ObjectSubclass for nadatx {
         // The debug category will be used later whenever we need to put something
         // into the debug logs
         let controller = unsafe {
-            let ptr = NewController();
+            let ptr = NewController(150, 1500);
             ptr
         };
+        let queue = Mutex::new(VecDeque::new());
         Self {
             srcpad,
             sinkpad,
             rtcp_srcpad,
             rtcp_sinkpad,
             settings,
+            data: queue,
             controller
         }
+    }
+}
+
+impl nadatx {
+
+}
+
+fn thread_timer(ptr : *const nadatx) {
+    let mut guard = unsafe {(*ptr).data.lock().unwrap()};
+    while let Some(obj) = guard.pop_front() {
+        callback(ptr, obj, true as u8);
     }
 }
 
@@ -648,6 +676,21 @@ impl ObjectImpl for nadatx {
         });
         PROPERTIES.as_ref()
     }
+
+    fn signals() -> &'static [Signal] {
+        use once_cell::sync::Lazy;
+        static SIGNALS: Lazy<Vec<Signal>> = Lazy::new(|| {
+            vec![
+                Signal::builder(
+                    "heartbeat",
+                    &[String::static_type().into()],
+                    glib::Type::UNIT.into(),
+                ).build(),
+            ]
+            });
+            SIGNALS.as_ref()
+    }
+
     fn set_property(
         &self,
         obj: &Self::Type,
@@ -671,6 +714,14 @@ impl ObjectImpl for nadatx {
                 );
                 let s0 = settings.params.as_ref().unwrap().as_str();
                 let s = CString::new(s0).expect("CString::new failed");
+                let ptr : SendPtr = SendPtr(self);
+                thread::spawn( || {
+                    let p = ptr;
+                    loop {
+                        thread::sleep(Duration::from_millis(5));
+                        thread_timer(p.0);
+                    }
+                });
                 //                self.srcpad.to_glib_none()
                 // STREAMTX_PTR = Some(&self);
                 //unsafe {
@@ -692,7 +743,7 @@ impl ObjectImpl for nadatx {
             _ => unimplemented!(),
         }
     }
-
+    
     // Called whenever a value of a property is read. It can be called
     // at any time from any thread.
     fn property(&self, _obj: &Self::Type, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
@@ -750,7 +801,9 @@ impl ObjectImpl for nadatx {
 }
 
 // Implementation of gst::Element virtual methods
-impl GstObjectImpl for nadatx {}
+impl GstObjectImpl for nadatx {
+
+}
 impl ElementImpl for nadatx {
     // Set the element specific metadata. This information is what
     // is visible from gst-inspect-1.0 and can also be programatically

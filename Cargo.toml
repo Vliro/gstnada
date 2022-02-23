@@ -35,9 +35,9 @@ path = "src/lib.rs"
 name="scream_sender"
 path="src/sender.rs"
 
-#[[bin]]
-#name="scream_receiver"
-#path="src/receiver.rs"
+[[bin]]
+name="scream_receiver"
+path="src/receiver.rs"
 
 [build-dependencies]
 gst-plugin-version-helper = "0.7.3"
