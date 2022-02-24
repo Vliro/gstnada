@@ -24,7 +24,8 @@ use gtypes::guint;
 extern crate gstreamer as gst;
 
 mod sender_util;
-
+//Pipeline
+// videotestsrc is-live=true pattern=ball ! x264enc name=video threads=4 speed-preset=ultrafast tune=fastdecode+zerolatency bitrate=10000 ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 ! rtph264pay ssrc=1 config-interval=-1 ! queue max-size-buffers=2 max-size-bytes=0 max-size-time=0 !  gcctx name="gcctx" params="  -nosummary -forceidr -ect 1  -initrate 2500 -minrate 500  -maxrate 10000 " !    udpsink host=127.0.0.1 port=30112 sync=false rtpbin name=r udpsrc port=30112 address=127.0.0.2 ! queue ! gcctx.rtcp_sink gcctx.rtcp_src !  r.recv_rtcp_sink_0  
 fn main() {
     gst::init().expect("Failed to initialize gst_init");
 

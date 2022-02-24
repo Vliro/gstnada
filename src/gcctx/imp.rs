@@ -50,6 +50,10 @@ impl Default for Settings {
         }
     }
 }
+struct ClockWait {
+    clock_id: Option<gst::ClockId>,
+    _flushing: bool,
+}
 
 // static STREAMTX_PTR: Option<&Gcctx>  = None;
 
@@ -62,7 +66,8 @@ pub struct Gcctx {
     rtcp_sinkpad: gst::Pad,
     settings: Mutex<Settings>,
     data: Mutex<VecDeque<gst::Buffer>>,
-    controller: RazorController
+    controller: RazorController,
+    clock_wait: Mutex<ClockWait>,
 }
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
@@ -432,7 +437,7 @@ pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
     (ecn_list, reader.position() >> 3)
 }
 
-fn callback(stx: *const Gcctx, buf: gst::Buffer, is_push: u8) {
+fn on_send_packet(stx: *const Gcctx, buf: gst::Buffer, is_push: u8) {
     trace!(
         CAT,
         "gstnada Handling buffer from scream {:?} is_push  {}",
@@ -616,7 +621,11 @@ impl ObjectSubclass for Gcctx {
             rtcp_sinkpad,
             settings,
             data: queue,
-            controller
+            controller,
+            clock_wait: Mutex::new(ClockWait {
+                clock_id: None,
+                _flushing: true,
+            })
         }
     }
 }
@@ -625,10 +634,10 @@ impl Gcctx {
 
 }
 
-fn thread_timer(ptr : *const Gcctx) {
-    let mut guard = unsafe {(*ptr).data.lock().unwrap()};
+fn thread_timer(ptr : &Gcctx) {
+    let mut guard = ptr.data.lock().unwrap();
     while let Some(obj) = guard.pop_front() {
-        callback(ptr, obj, true as u8);
+        on_send_packet(ptr, obj, true as u8);
     }
 }
 
@@ -730,14 +739,6 @@ impl ObjectImpl for Gcctx {
                     "Changing params  to {}",
                     settings.params.as_ref().unwrap()
                 );
-                let ptr : SendPtr = SendPtr(self);
-                thread::spawn( || {
-                    let p = ptr;
-                    loop {
-                        thread::sleep(Duration::from_millis(5));
-                        thread_timer(p.0);
-                    }
-                });
                 //                self.srcpad.to_glib_none()
                 // STREAMTX_PTR = Some(&self);
                 //unsafe {
@@ -901,7 +902,36 @@ impl ElementImpl for Gcctx {
         transition: gst::StateChange,
     ) -> Result<gst::StateChangeSuccess, gst::StateChangeError> {
         info!(CAT, obj: element, "Changing state {:?}", transition);
+        match transition {
+            gst::StateChange::NullToReady => {
 
+                debug!(CAT, obj: element, "Waiting for 1s before retrying");
+                let clock = gst::SystemClock::obtain();
+                let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
+                let mut clock_wait = self.clock_wait.lock().unwrap();
+                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(500));
+                clock_wait.clock_id = Some(timeout.clone());
+                let element_weak = element.downgrade();
+                timeout
+                    .wait_async(move |_clock, _time, _id| {
+                        let element = match element_weak.upgrade() {
+                            None => return,
+                            Some(element) => element,
+                        };
+                        let lib_data = Gcctx::from_instance(&element);
+
+                        thread_timer(&lib_data);
+                    })
+                    .expect("Failed to wait async");
+            }
+            gst::StateChange::ReadyToNull => {
+                let mut clock_wait = self.clock_wait.lock().unwrap();
+                if let Some(clock_id) = clock_wait.clock_id.take() {
+                    clock_id.unschedule();
+                }
+            }
+            _ => (),
+        }
         // Call the parent class' implementation of ::change_state()
         self.parent_change_state(element, transition)
     }

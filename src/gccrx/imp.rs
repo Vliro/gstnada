@@ -3,7 +3,7 @@ use glib::subclass::prelude::*;
 
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-
+use std::default::Default;
 use crate::gst;
 
 use std::convert::TryInto;
@@ -16,15 +16,17 @@ use gstreamer::{debug, log, trace};
 pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
 pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
+use gstreamer_sys::GstElement;
 use libc::time;
 
 use once_cell::sync::Lazy;
+use crate::gccrx::gccrx::GccRx;
 
 use super::gccrx;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub (crate) struct RazorController(*const std::ffi::c_void);
+pub struct RazorController(*const std::ffi::c_void);
 unsafe impl Sync for RazorController {}
 unsafe impl Send for RazorController {}
 // Property value storage
@@ -49,7 +51,7 @@ pub struct Gccrx {
     sinkpad: gst::Pad,
     lib_data: Mutex<gccrx::GccRx>,
     clock_wait: Mutex<ClockWait>,
-    controller: RazorController
+    controller: RazorController,
 }
 
 pub static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
@@ -334,16 +336,17 @@ impl ObjectSubclass for Gccrx {
         rtcp_srcpad.push_event(gst::event::Segment::new(&segment));
         */
         let rtcp_srcpad = Some(Arc::new(Mutex::new(rtcp_srcpad)));
-        let lib_data = Mutex::new(Default::default());
 
         let clock_wait = Mutex::new(ClockWait {
             clock_id: None,
             _flushing: true,
         });
+        let lib_data : Mutex<GccRx> = Mutex::new(Default::default());
 
         let controller = unsafe {
             receiver_cc_create(150, 1500, 32, cast_to_raw_pointer(&lib_data), send_feedback_cb)
         };
+        lib_data.lock().unwrap().set_controller(controller);
         // Return an instance of our struct and also include our debug category here.
         // The debug category will be used later whenever we need to put something
         // into the debug logs
@@ -475,14 +478,6 @@ impl ElementImpl for Gccrx {
                     let mut screamrx = self.lib_data.lock().unwrap();
                     log!(CAT, "gccrx.ScreamReceiverPluginInit()");
                     screamrx.ScreamReceiverPluginInit(self.rtcp_srcpad.clone());
-                    let ptr : SendPtr = SendPtr(self);
-                    thread::spawn( || {
-                        let p = ptr;
-                        loop {
-                            thread::sleep(Duration::from_millis(5));
-                            thread_timer(p.0);
-                        }
-                    });
                 }
 
                 debug!(CAT, obj: element, "Waiting for 1s before retrying");
@@ -498,6 +493,7 @@ impl ElementImpl for Gccrx {
                             None => return,
                             Some(element) => element,
                         };
+
 
                         let lib_data = Gccrx::from_instance(&element);
                         let mut screamrx = lib_data.lib_data.lock().unwrap();
@@ -533,28 +529,17 @@ extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usi
     //feedback here
 }
 
-fn thread_timer(ptr : *const Gccrx) {
-    unsafe {
-        receiver_cc_heartbeat((*ptr).controller);
-    }
-    //let mut guard = unsafe {(*ptr).data.lock().unwrap()};
-    //while let Some(obj) = guard.pop_front() {
-   //     callback(ptr, obj, true as u8);
-   // }
-}
-
 #[link(name = "cc", kind = "static")]
 #[link(name = "estimator", kind = "static")]
 #[link(name = "common", kind = "static")]
 #[link(name = "pacing", kind = "static")]
 extern "C" {
     #[allow(improper_ctypes)]
-    fn receiver_cc_create(min_bitrate: i32, max_bitrate: i32, packet_header_size: i32, handler: *const u8,
+    pub (crate) fn receiver_cc_create(min_bitrate: i32, max_bitrate: i32, packet_header_size: i32, handler: *const u8,
     send_feedback_func: extern "C" fn(handler: *const u8, payload: *const u8, size: usize)) -> RazorController;
-    fn receiver_cc_destroy(cc: RazorController);
-    fn receiver_cc_heartbeat(cc: RazorController);
-    fn receiver_cc_on_received(cc: RazorController, seq: u16, timestamp: u32, size: usize, remb: i32);
-    fn receiver_cc_update_rtt(cc: RazorController, rtt: i32);
-    fn receiver_cc_set_min_bitrate(cc: RazorController, min_bitrate: i32);
-    fn receiver_cc_set_max_bitrate(cc: RazorController, max_bitrate: i32);
+    pub (crate) fn receiver_cc_destroy(cc: RazorController);
+    pub (crate) fn receiver_cc_heartbeat(cc: RazorController);
+    pub (crate) fn receiver_cc_on_received(cc: RazorController, seq: u16, timestamp: u32, size: usize, remb: i32);
+    pub (crate) fn receiver_cc_update_rtt(cc: RazorController, rtt: i32);
+    pub (crate) fn receiver_cc_set_max_bitrate(cc: RazorController, max_bitrate: i32);
 }

@@ -11,7 +11,7 @@ use libc::timeval;
 use once_cell::sync::Lazy;
 
 use crate::gst::prelude::PadExtManual;
-use crate::gccrx::imp::CAT;
+use crate::gccrx::imp::{CAT, RazorController, receiver_cc_heartbeat};
 use crate::gst::Element;
 use crate::gst;
 
@@ -77,6 +77,7 @@ pub struct GccRx {
     ix: i32,
     ackDiff: i32,
     nReportedRtpPackets: usize,
+    controller: Option<RazorController>,
     streams: HashMap<u32, Stream>,
     //    socket: Option<UdpSocket>,
     pub rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>,
@@ -85,6 +86,7 @@ pub struct GccRx {
      */
     //    std::list<Stream*> streams;
 }
+
 impl Default for GccRx {
     fn default() -> Self {
         GccRx {
@@ -100,6 +102,7 @@ impl Default for GccRx {
             // ackDiff: -1,
             // ackDiff: 1,
             nReportedRtpPackets: kReportedRtpPackets,
+            controller: None,
             streams: HashMap::new(),
             // socket: None,
             rtcp_srcpad: None,
@@ -128,6 +131,11 @@ impl Write for WriteToGstInfo {
 }
 
 impl GccRx {
+
+    pub fn set_controller(&mut self, c : RazorController) {
+        self.controller = Some(c)
+    }
+
     pub fn ScreamReceiverPluginInit(&mut self, rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>) {
         info!(CAT, "Init");
         self.rtcp_srcpad = rtcp_srcpad;
@@ -246,8 +254,13 @@ impl GccRx {
             }
         }
     }
+
+    //Every 500µs.
     pub fn periodic_flush(&mut self) {
-        let time_ntp = getTimeInNtp();
+        unsafe {
+            receiver_cc_heartbeat(self.controller.unwrap());
+        }
+        /*let time_ntp = getTimeInNtp();
         let rtcpFbInterval_ntp = self.getRtcpFbInterval();
         if self.isFeedback(time_ntp)
             && (self.checkIfFlushAck() || (time_ntp - self.getLastFeedbackT() > rtcpFbInterval_ntp))
@@ -262,7 +275,7 @@ impl GccRx {
                 let rtcp_srcpad = &self.rtcp_srcpad.as_ref().unwrap().lock().unwrap();
                 rtcp_srcpad.push(buffer).unwrap();
             }
-        }
+        }*/
     }
 }
 
