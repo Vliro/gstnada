@@ -26,3 +26,11 @@ pub fn register(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
         Gccrx::static_type(),
     )
 }
+
+pub (crate) unsafe fn cast_to_raw_pointer<T>(val: &T) -> *const u8 {
+    val as *const T as usize as *const u8
+}
+
+pub (crate) unsafe fn cast_from_raw_pointer<T>(val: *const u8) -> *const T {
+    val as usize as *const T
+}

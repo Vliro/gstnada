@@ -20,6 +20,7 @@ use gstreamer_sys::GstElement;
 use libc::time;
 
 use once_cell::sync::Lazy;
+use crate::gccrx::{cast_from_raw_pointer, cast_to_raw_pointer};
 use crate::gccrx::gccrx::GccRx;
 
 use super::gccrx;
@@ -359,14 +360,6 @@ impl ObjectSubclass for Gccrx {
             controller
         }
     }
-}
-
-unsafe fn cast_to_raw_pointer<T>(val: &T) -> *const u8 {
-    val as *const T as usize as *const u8
-}
-
-unsafe fn cast_from_raw_pointer<T>(val: *const u8) -> *const T {
-    val as usize as *const T
 }
 
 impl Drop for Gccrx {

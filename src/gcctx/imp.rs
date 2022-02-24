@@ -20,17 +20,22 @@ use gstreamer_video as gstv;
 pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
 pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
+use hashbrown::HashMap;
 
 use once_cell::sync::Lazy;
+use crate::gccrx::{cast_from_raw_pointer, cast_to_raw_pointer};
 use crate::gst;
 
 const DEFAULT_CURRENT_MAX_BITRATE: u32 = 0;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub (crate) struct RazorController(*const std::ffi::c_void);
+pub(crate) struct RazorController(*const std::ffi::c_void);
+
 unsafe impl Sync for RazorController {}
+
 unsafe impl Send for RazorController {}
+
 // Property value storage
 #[derive(Debug, Clone)]
 struct Settings {
@@ -38,7 +43,7 @@ struct Settings {
     current_max_bitrate: u32,
 }
 
-struct SendPtr (*const Gcctx);
+struct SendPtr(*const Gcctx);
 
 unsafe impl Send for SendPtr {}
 
@@ -50,6 +55,7 @@ impl Default for Settings {
         }
     }
 }
+
 struct ClockWait {
     clock_id: Option<gst::ClockId>,
     _flushing: bool,
@@ -65,8 +71,8 @@ pub struct Gcctx {
     rtcp_srcpad: gst::Pad,
     rtcp_sinkpad: gst::Pad,
     settings: Mutex<Settings>,
-    data: Mutex<VecDeque<gst::Buffer>>,
-    controller: RazorController,
+    data: Mutex<HashMap<u32, gst::Buffer>>,
+    controller: Option<RazorController>,
     clock_wait: Mutex<ClockWait>,
 }
 
@@ -79,20 +85,21 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 });
 
 
-
 impl Drop for Gcctx {
     fn drop(&mut self) {
         unsafe {
-           sender_cc_destroy(self.controller);
+            sender_cc_destroy(self.controller.unwrap());
         }
     }
 }
+
 #[derive(Debug)]
-pub (crate) struct Feedback {
+pub(crate) struct Feedback {
     ecn: u8,
     seq: u16,
-    ts: u64
+    ts: u64,
 }
+
 //        uint16_t sequence;
 //         uint64_t rxTimestampUs;
 //         uint8_t ecn;
@@ -101,7 +108,7 @@ impl Feedback {
         Feedback {
             ecn,
             seq,
-            ts: 0
+            ts: 0,
         }
     }
 }
@@ -136,34 +143,16 @@ impl Gcctx {
             timestamp
         );
         drop(rtp_buffer);
-        let mut rate: u32 = 0;
         let mut force_idr: u32 = 1;
         unsafe {
             let size = buffer.size().try_into().unwrap();
 
-            sender_on_send_packet(self.controller, seq, size);
-         //   rate = getBitrate(self.controller) as u32;
+            sender_cc_add_pace_packet(self.controller.unwrap(), seq as u32, 1, size);
         }
-        debug!(
-            CAT,
-            obj: pad,
-            "Gcctx current estimate bitrate {}",
-            rate,
-        );
 
-        if rate != 0 {
-            let mut settings = self.settings.lock().unwrap();
-            rate /= 1000;
-            let are_equal = settings.current_max_bitrate == rate;
-            if !are_equal {
-                settings.current_max_bitrate = rate;
-            }
-            drop(settings);
-            if !are_equal {
-                element.notify("current-max-bitrate");
-            }
-        }
-        self.data.lock().unwrap().push_back(buffer);
+
+
+        self.data.lock().unwrap().insert(seq as u32, buffer);
         if force_idr != 0 {
             let event = gstv::UpstreamForceKeyUnitEvent::builder()
                 .all_headers(true)
@@ -242,9 +231,9 @@ impl Gcctx {
 
         info!(CAT, obj: element, "Gcctx parsed {} bytes", count);
         drop(bmr);
-       // if res == 0 {
+        // if res == 0 {
         self.rtcp_srcpad.push(buffer).unwrap();
-     //   }
+        //   }
         glib::bitflags::_core::result::Result::Ok(gst::FlowSuccess::Ok)
     }
 
@@ -365,7 +354,7 @@ impl Gcctx {
     }
 }
 
-pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
+pub(crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
     let mut reader = BitReader::new(data);
     let _v = reader.read_u8(2).unwrap();
     assert_eq!(_v, 2);
@@ -394,7 +383,7 @@ pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
                 for _ in 0..cnt {
                     ecn_list.push(Feedback::new(ecn, base_seq));
                 }
-            },
+            }
             1 => {
                 let sym_size = reader.read_u8(1).unwrap();
                 match sym_size {
@@ -402,12 +391,12 @@ pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
                         for _ in 0..14 {
                             ecn_list.push(Feedback::new(reader.read_u8(1).unwrap(), base_seq));
                         }
-                    },
+                    }
                     1 => {
                         for _ in 1..7 {
                             ecn_list.push(Feedback::new(reader.read_u8(2).unwrap(), base_seq));
                         }
-                    },
+                    }
                     _ => panic!("unexpect sym_size {}", sym_size)
                 }
             }
@@ -423,29 +412,31 @@ pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
                 offset = offset >> 2;
                 cur_time = cur_time + offset as u32;
                 x.ts = cur_time as u64;
-            },
+            }
             2 => {
                 let mut offset = reader.read_u16(16).unwrap();
                 // in millis, 250 µs -> 0.25s -> 1 /4 -> >> 2
                 offset = offset >> 2;
                 cur_time = cur_time + offset as u32;
                 x.ts = cur_time as u64;
-            },
+            }
             _ => unreachable!()
         }
     }
     (ecn_list, reader.position() >> 3)
 }
 
-fn on_send_packet(stx: *const Gcctx, buf: gst::Buffer, is_push: u8) {
+fn on_send_packet(stx: *const Gcctx, id: u32, is_push: u8) {
     trace!(
         CAT,
         "gstnada Handling buffer from scream {:?} is_push  {}",
-        buf,
+        id,
         is_push
     );
+
     if is_push == 1 {
         unsafe {
+            let buf = (*stx).data.lock().unwrap().remove(&id).unwrap();
             let fls = (*stx).srcpad.pad_flags();
             //            if fls.contains(gst::PadFlags::FLUSHING) || fls.contains(gst::PadFlags::EOS)
             if fls.contains(gst::PadFlags::EOS) {
@@ -463,37 +454,8 @@ fn on_send_packet(stx: *const Gcctx, buf: gst::Buffer, is_push: u8) {
             }
         }
     } else {
-        drop(buf);
+        unsafe { (*stx).data.lock().unwrap().remove(&id).unwrap(); }
     }
-}
-
-extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32) {
-
-}
-
-extern "C" fn pace_send(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32) {
-
-}
-
-#[link(name = "cc", kind = "static")]
-#[link(name = "estimator", kind = "static")]
-#[link(name = "common", kind = "static")]
-#[link(name = "pacing", kind = "static")]
-extern "C" {
-    #[allow(improper_ctypes)]
-    fn sender_cc_create(trigger: *const u8, bitrate_cb:
-    extern "C" fn(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32), handler: *const u8,
-                        pace_send_func: extern "C" fn(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32),
-                        queue_ms: i32) -> RazorController;
-    fn sender_cc_destroy(cc: RazorController);
-    fn sender_cc_heartbeat(cc: RazorController);
-    fn sender_cc_add_pace_packet(cc: RazorController, packet_id: u32, retrans: i32, size: usize);
-    fn sender_on_send_packet(cc: RazorController, seq: u16, size: usize);
-    fn sender_on_feedback(cc: RazorController, feedback: *const u8, size: i32);
-    fn sender_cc_update_rtt(cc: RazorController, rtt: i32);
-    fn sender_cc_set_bitrates(cc: RazorController, min: u32, start: u32, max: u32);
-    fn sender_cc_get_pacer_queue_ms(cc: RazorController);
-    fn sender_cc_get_first_packet_ts(cc: RazorController);
 }
 
 // This trait registers our type with the GObject object system and
@@ -609,35 +571,42 @@ impl ObjectSubclass for Gcctx {
         // Return an instance of our struct and also include our debug category here.
         // The debug category will be used later whenever we need to put something
         // into the debug logs
-        let controller = unsafe {
-            let ptr = sender_cc_create(std::ptr::null(), bitrate_change, std::ptr::null(), pace_send, 50);
-            ptr
-        };
-        let queue = Mutex::new(VecDeque::new());
-        Self {
+        let queue = Mutex::new(HashMap::new());
+
+        let mut ret = Self {
             srcpad,
             sinkpad,
             rtcp_srcpad,
             rtcp_sinkpad,
             settings,
             data: queue,
-            controller,
+            controller: None,
             clock_wait: Mutex::new(ClockWait {
                 clock_id: None,
                 _flushing: true,
-            })
-        }
+            }),
+        };
+        let controller = unsafe {
+            let ptr = sender_cc_create(cast_to_raw_pointer(&ret), bitrate_change, cast_to_raw_pointer(&ret), pace_send, 50);
+            ptr
+        };
+        ret.controller = Some(controller);
+        ret
     }
 }
 
-impl Gcctx {
+impl Gcctx {}
 
-}
-
-fn thread_timer(ptr : &Gcctx) {
-    let mut guard = ptr.data.lock().unwrap();
-    while let Some(obj) = guard.pop_front() {
-        on_send_packet(ptr, obj, true as u8);
+fn thread_timer(ptr: &Gcctx) -> bool {
+    unsafe {
+        let cur_bitrate = {
+            ptr.settings.lock().unwrap().current_max_bitrate
+        };
+        sender_cc_heartbeat(ptr.controller.unwrap());
+        let new_bitrate = {
+            ptr.settings.lock().unwrap().current_max_bitrate
+        };
+        cur_bitrate != new_bitrate
     }
 }
 
@@ -714,8 +683,8 @@ impl ObjectImpl for Gcctx {
                     glib::Type::UNIT.into(),
                 ).build(),
             ]
-            });
-            SIGNALS.as_ref()
+        });
+        SIGNALS.as_ref()
     }
 
     fn set_property(
@@ -743,7 +712,7 @@ impl ObjectImpl for Gcctx {
                 // STREAMTX_PTR = Some(&self);
                 //unsafe {
                 //    ScreamSenderPluginInit(s.as_ptr(), self, callback);
-               // }
+                // }
             }
             "current-max-bitrate" => {
                 let mut settings = self.settings.lock().unwrap();
@@ -760,7 +729,7 @@ impl ObjectImpl for Gcctx {
             _ => unimplemented!(),
         }
     }
-    
+
     // Called whenever a value of a property is read. It can be called
     // at any time from any thread.
     fn property(&self, _obj: &Self::Type, _id: usize, pspec: &glib::ParamSpec) -> glib::Value {
@@ -818,9 +787,8 @@ impl ObjectImpl for Gcctx {
 }
 
 // Implementation of gst::Element virtual methods
-impl GstObjectImpl for Gcctx {
+impl GstObjectImpl for Gcctx {}
 
-}
 impl ElementImpl for Gcctx {
     // Set the element specific metadata. This information is what
     // is visible from gst-inspect-1.0 and can also be programatically
@@ -854,7 +822,7 @@ impl ElementImpl for Gcctx {
                 gst::PadPresence::Always,
                 &caps,
             )
-            .unwrap();
+                .unwrap();
 
             let caps = gst::Caps::new_simple("application/x-rtcp", &[]);
             let rtcp_src_pad_template = gst::PadTemplate::new(
@@ -863,7 +831,7 @@ impl ElementImpl for Gcctx {
                 gst::PadPresence::Always,
                 &caps,
             )
-            .unwrap();
+                .unwrap();
 
             let caps = gst::Caps::new_simple("application/x-rtp", &[]);
             let sink_pad_template = gst::PadTemplate::new(
@@ -872,7 +840,7 @@ impl ElementImpl for Gcctx {
                 gst::PadPresence::Always,
                 &caps,
             )
-            .unwrap();
+                .unwrap();
 
             let caps = gst::Caps::new_simple("application/x-rtcp", &[]);
             let rtp_sink_pad_template = gst::PadTemplate::new(
@@ -881,7 +849,7 @@ impl ElementImpl for Gcctx {
                 gst::PadPresence::Always,
                 &caps,
             )
-            .unwrap();
+                .unwrap();
             vec![
                 src_pad_template,
                 rtcp_src_pad_template,
@@ -904,7 +872,6 @@ impl ElementImpl for Gcctx {
         info!(CAT, obj: element, "Changing state {:?}", transition);
         match transition {
             gst::StateChange::NullToReady => {
-
                 debug!(CAT, obj: element, "Waiting for 1s before retrying");
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
@@ -920,7 +887,9 @@ impl ElementImpl for Gcctx {
                         };
                         let lib_data = Gcctx::from_instance(&element);
 
-                        thread_timer(&lib_data);
+                        if thread_timer(&lib_data) {
+                            element.notify("current-max-bitrate")
+                        }
                     })
                     .expect("Failed to wait async");
             }
@@ -935,4 +904,45 @@ impl ElementImpl for Gcctx {
         // Call the parent class' implementation of ::change_state()
         self.parent_change_state(element, transition)
     }
+}
+
+
+extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32) {
+    let gcc: *const Gcctx = unsafe {
+        cast_from_raw_pointer(trigger)
+    };
+    unsafe {
+        let mut guard = (*gcc).settings.lock().unwrap();
+        let old_br = guard.current_max_bitrate;
+        guard.current_max_bitrate = bitrate;
+        drop(guard);
+    }
+}
+
+extern "C" fn pace_send(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32) {
+    //Actually send data.
+    unsafe {
+        on_send_packet(cast_from_raw_pointer(handler), id, true as u8);
+    }
+}
+
+#[link(name = "cc", kind = "static")]
+#[link(name = "estimator", kind = "static")]
+#[link(name = "common", kind = "static")]
+#[link(name = "pacing", kind = "static")]
+extern "C" {
+    #[allow(improper_ctypes)]
+    fn sender_cc_create(trigger: *const u8, bitrate_cb:
+    extern "C" fn(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32), handler: *const u8,
+                        pace_send_func: extern "C" fn(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32),
+                        queue_ms: i32) -> RazorController;
+    fn sender_cc_destroy(cc: RazorController);
+    fn sender_cc_heartbeat(cc: RazorController);
+    fn sender_cc_add_pace_packet(cc: RazorController, packet_id: u32, retrans: i32, size: usize);
+    fn sender_on_send_packet(cc: RazorController, seq: u16, size: usize);
+    fn sender_on_feedback(cc: RazorController, feedback: *const u8, size: i32);
+    fn sender_cc_update_rtt(cc: RazorController, rtt: i32);
+    fn sender_cc_set_bitrates(cc: RazorController, min: u32, start: u32, max: u32);
+    fn sender_cc_get_pacer_queue_ms(cc: RazorController);
+    fn sender_cc_get_first_packet_ts(cc: RazorController);
 }
