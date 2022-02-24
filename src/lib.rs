@@ -10,20 +10,20 @@ use gstreamer_base as gst_base;
 use glib;
 use gstreamer::plugin_define;
 
-//mod nadarx;
-//#[cfg(not(feature = "nadarx-only"))]
-mod nadatx;
-//#[cfg(not(feature = "nadarx-only"))]
+mod gccrx;
+//#[cfg(not(feature = "gccrx-only"))]
+mod gcctx;
+//#[cfg(not(feature = "gccrx-only"))]
 //mod screamtxbw;
 
 // Plugin entry point that should register all elements provided by this plugin,
 // and everything else that this plugin might provide (e.g. typefinders or device providers).
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
-  //  #[cfg(not(feature = "nadarx-only"))]
-    nadatx::register(plugin)?;
-   // #[cfg(not(feature = "nadarx-only"))]
+  //  #[cfg(not(feature = "gccrx-only"))]
+    gcctx::register(plugin)?;
+   // #[cfg(not(feature = "gccrx-only"))]
    // screamtxbw::register(plugin)?;
-  //  nadarx::register(plugin)?;
+    gccrx::register(plugin)?;
     Ok(())
 }
 
@@ -33,7 +33,7 @@ fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
 // license of the plugin, source package name, binary package name, origin where it comes from
 // and the date/time of release.
 plugin_define!(
-    nadatx,
+    Gcc,
     env!("CARGO_PKG_DESCRIPTION"),
     plugin_init,
     concat!(env!("CARGO_PKG_VERSION"), "-", env!("COMMIT_ID")),

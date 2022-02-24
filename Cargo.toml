@@ -1,11 +1,11 @@
 [package]
-name = "gstnada"
+name = "gstcc"
 version = "0.6.0"
 authors = ["Jacob Teplitsky", "Albert Sjölund"]
 #repository = "https://github.com/EricssonResearch/scream.git"
 license = "BSD 2-clause"
 edition = "2021"
-description = "Rust Gstscream Nada Plugin"
+description = "Rust Gstscream CC Plugin"
 
 [dependencies]
 glib = { git = "https://github.com/gtk-rs/gtk-rs-core" }
@@ -27,7 +27,7 @@ argparse = "0.2.2"
 bitreader = "0.3.5"
 
 [lib]
-name = "gstnada"
+name = "gstcc"
 crate-type = ["cdylib", "rlib", "staticlib"]
 path = "src/lib.rs"
 
@@ -39,11 +39,13 @@ path="src/sender.rs"
 name="scream_receiver"
 path="src/receiver.rs"
 
+
+
 [build-dependencies]
 gst-plugin-version-helper = "0.7.3"
 cc = "1.0"
 
 [features]
-##nadarx-only = []
+##gccrx-only = []
 
 default = []

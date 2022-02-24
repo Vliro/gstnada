@@ -68,11 +68,11 @@ pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
     /*  TBD
      * set ecn bits
      */
-    sender_util::stats(&pipeline_clone, &Some("nadatx".to_string()));
+    sender_util::stats(&pipeline_clone, &Some("gcctx".to_string()));
     sender_util::run_time_bitrate_set(
         &pipeline_clone,
         verbose,
-        &Some("nadatx".to_string()),
+        &Some("gcctx".to_string()),
         &Some("video".to_string()),
         ratemultiply_opt,
     );
@@ -104,7 +104,7 @@ pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
         let bin = p.dynamic_cast_ref::<gst::Bin>().unwrap();
         loop {
             time_id.wait();
-            let el = bin.by_name_recurse_up("nadatx").unwrap();
+            let el = bin.by_name_recurse_up("gcctx").unwrap();
             let video = bin.by_name_recurse_up("video").unwrap();
             let prop = el.property::<u32>("current-max-bitrate");
             //if prop > 0 {

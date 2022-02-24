@@ -17,30 +17,47 @@ pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
 
 use once_cell::sync::Lazy;
 
-use super::nadarx;
+use super::gccrx;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub (crate) struct RazorController(*const std::ffi::c_void);
+unsafe impl Sync for RazorController {}
+unsafe impl Send for RazorController {}
+// Property value storage
+#[derive(Debug, Clone)]
+struct Settings {
+    params: Option<String>,
+    current_max_bitrate: u32,
+}
+
+struct SendPtr (*const Gccrx);
+
+unsafe impl Send for SendPtr {}
 
 struct ClockWait {
     clock_id: Option<gst::ClockId>,
     _flushing: bool,
 }
 
-pub struct Nadarx {
+pub struct Gccrx {
     srcpad: gst::Pad,
     rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>,
     sinkpad: gst::Pad,
-    lib_data: Mutex<nadarx::NadaRx>,
+    lib_data: Mutex<gccrx::GccRx>,
     clock_wait: Mutex<ClockWait>,
+    controller: RazorController
 }
 
 pub static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
-        "nadarx",
+        "gccrx",
         gst::DebugColorFlags::empty(),
-        Some("Screamrx Element"),
+        Some("Gccrx Element"),
     )
 });
 
-impl Nadarx {
+impl Gccrx {
     // Called whenever a new buffer is passed to our sink pad. Here buffers should be processed and
     // whenever some output buffer is available have to push it out of the source pad.
     // Here we just pass through all buffers directly
@@ -50,7 +67,7 @@ impl Nadarx {
     fn sink_chain(
         &self,
         pad: &gst::Pad,
-        _element: &super::Screamrx,
+        _element: &super::Gccrx,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         trace!(CAT, obj: pad, "gstscream Handling buffer {:?}", buffer);
@@ -87,7 +104,7 @@ impl Nadarx {
     //
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
-    fn sink_event(&self, pad: &gst::Pad, _element: &super::Screamrx, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, _element: &super::Gccrx, event: gst::Event) -> bool {
         log!(
             CAT,
             obj: pad,
@@ -128,7 +145,7 @@ impl Nadarx {
     fn sink_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Screamrx,
+        _element: &super::Gccrx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(CAT, obj: pad, "gstscream Handling query {:?}", query);
@@ -143,7 +160,7 @@ impl Nadarx {
     //
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
-    fn src_event(&self, pad: &gst::Pad, _element: &super::Screamrx, event: gst::Event) -> bool {
+    fn src_event(&self, pad: &gst::Pad, _element: &super::Gccrx, event: gst::Event) -> bool {
         log!(
             CAT,
             obj: pad,
@@ -157,7 +174,7 @@ impl Nadarx {
     fn rtcp_src_event(
         &self,
         pad: &gst::Pad,
-        _element: &super::Screamrx,
+        _element: &super::Gccrx,
         event: gst::Event,
     ) -> bool {
         log!(
@@ -173,7 +190,7 @@ impl Nadarx {
     fn rtcp_src_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Screamrx,
+        _element: &super::Gccrx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(
@@ -197,7 +214,7 @@ impl Nadarx {
     fn src_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::Screamrx,
+        _element: &super::Gccrx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(CAT, obj: pad, "gstscream Handling query {:?}", query);
@@ -209,9 +226,9 @@ impl Nadarx {
 // provides the entry points for creating a new instance and setting
 // up the class data
 #[glib::object_subclass]
-impl ObjectSubclass for Nadarx {
-    const NAME: &'static str = "RsScreamrx";
-    type Type = super::Screamrx;
+impl ObjectSubclass for Gccrx {
+    const NAME: &'static str = "RsGccrx";
+    type Type = super::Gccrx;
     type ParentType = gst::Element;
 
     // Called when a new instance is to be created. We need to return an instance
@@ -224,27 +241,27 @@ impl ObjectSubclass for Nadarx {
         // - Catch panics from the pad functions and instead of aborting the process
         //   it will simply convert them into an error message and poison the element
         //   instance
-        // - Extract our Screamrx struct from the object instance and pass it to us
+        // - Extract our Gccrx struct from the object instance and pass it to us
         //
         // Details about what each function is good for is next to each function definition
         let templ = klass.pad_template("sink").unwrap();
         let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
             .chain_function(|pad, parent, buffer| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
                     |screamrx, element| screamrx.sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || false,
                     |screamrx, element| screamrx.sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || false,
                     |screamrx, element| screamrx.sink_query(pad, element, query),
@@ -255,14 +272,14 @@ impl ObjectSubclass for Nadarx {
         let templ = klass.pad_template("src").unwrap();
         let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
             .event_function(|pad, parent, event| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || false,
                     |screamrx, element| screamrx.src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || false,
                     |screamrx, element| screamrx.src_query(pad, element, query),
@@ -274,14 +291,14 @@ impl ObjectSubclass for Nadarx {
         let templ = klass.pad_template(name).unwrap();
         let rtcp_srcpad = gst::Pad::builder_with_template(&templ, Some(name))
             .event_function(|pad, parent, event| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || false,
                     |screamrx, element| screamrx.rtcp_src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                Nadarx::catch_panic_pad_function(
+                Gccrx::catch_panic_pad_function(
                     parent,
                     || false,
                     |screamrx, element| screamrx.rtcp_src_query(pad, element, query),
@@ -318,6 +335,9 @@ impl ObjectSubclass for Nadarx {
             _flushing: true,
         });
 
+        let controller = unsafe {
+            receiver_cc_create(150, 1500, 32, cast_to_raw_pointer(&lib_data), send_feedback_cb)
+        };
         // Return an instance of our struct and also include our debug category here.
         // The debug category will be used later whenever we need to put something
         // into the debug logs
@@ -327,17 +347,35 @@ impl ObjectSubclass for Nadarx {
             sinkpad,
             lib_data,
             clock_wait,
+            controller
         }
     }
 }
+
+unsafe fn cast_to_raw_pointer<T>(val: &T) -> *const u8 {
+    val as *const T as usize as *const u8
+}
+
+unsafe fn cast_from_raw_pointer<T>(val: *const u8) -> *const T {
+    val as usize as *const T
+}
+
+impl Drop for Gccrx {
+    fn drop(&mut self) {
+        unsafe {
+            receiver_cc_destroy(self.controller);
+        }
+    }
+}
+
 // Implementation of glib::Object virtual methods
-impl ObjectImpl for Nadarx {
+impl ObjectImpl for Gccrx {
     // Called right after construction of a new instance
     fn constructed(&self, obj: &Self::Type) {
         // Call the parent class' ::constructed() implementation first
         self.parent_constructed(obj);
 
-        // Here we actually add the pads we created in Screamrx::new() to the
+        // Here we actually add the pads we created in Gccrx::new() to the
         // element so that GStreamer is aware of their existence.
         obj.add_pad(&self.sinkpad).unwrap();
         let rtcp_srcpad = self.rtcp_srcpad.as_ref().unwrap().lock().unwrap();
@@ -347,8 +385,8 @@ impl ObjectImpl for Nadarx {
 }
 
 // Implementation of gst::Element virtual methods
-impl GstObjectImpl for Nadarx {}
-impl ElementImpl for Nadarx {
+impl GstObjectImpl for Gccrx {}
+impl ElementImpl for Gccrx {
     // Set the element specific metadata. This information is what
     // is visible from gst-inspect-1.0 and can also be programatically
     // retrieved from the gst::Registry after initial registration
@@ -360,9 +398,9 @@ impl ElementImpl for Nadarx {
         // without having to load the plugin in memory.
         static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
             gst::subclass::ElementMetadata::new(
-                "Screamrx",
+                "Gccrx",
                 "Generc",
-                "pass RTP packets to nadarx",
+                "pass RTP packets to gccrx",
                 "Jacob Teplitsky <jacob.teplitsky@ericsson.com>",
             )
         });
@@ -429,7 +467,7 @@ impl ElementImpl for Nadarx {
             gst::StateChange::NullToReady => {
                 {
                     let mut screamrx = self.lib_data.lock().unwrap();
-                    log!(CAT, "nadarx.ScreamReceiverPluginInit()");
+                    log!(CAT, "gccrx.ScreamReceiverPluginInit()");
                     screamrx.ScreamReceiverPluginInit(self.rtcp_srcpad.clone());
                 }
 
@@ -447,7 +485,7 @@ impl ElementImpl for Nadarx {
                             Some(element) => element,
                         };
 
-                        let lib_data = Nadarx::from_instance(&element);
+                        let lib_data = Gccrx::from_instance(&element);
                         let mut screamrx = lib_data.lib_data.lock().unwrap();
                         screamrx.periodic_flush();
                     })
@@ -466,4 +504,24 @@ impl ElementImpl for Nadarx {
         // Call the parent class' implementation of ::change_state()
         self.parent_change_state(element, transition)
     }
+}
+
+extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usize) {
+
+}
+
+#[link(name = "cc", kind = "static")]
+#[link(name = "estimator", kind = "static")]
+#[link(name = "common", kind = "static")]
+#[link(name = "pacing", kind = "static")]
+extern "C" {
+    #[allow(improper_ctypes)]
+    fn receiver_cc_create(min_bitrate: i32, max_bitrate: i32, packet_header_size: i32, handler: *const u8,
+    send_feedback_func: extern "C" fn(handler: *const u8, payload: *const u8, size: usize)) -> RazorController;
+    fn receiver_cc_destroy(cc: RazorController);
+    fn receiver_cc_heartbeat(cc: RazorController);
+    fn receiver_cc_on_received(cc: RazorController, seq: u16, timestamp: u32, size: usize, remb: i32);
+    fn receiver_cc_update_rtt(cc: RazorController, rtt: i32);
+    fn receiver_cc_set_min_bitrate(cc: RazorController, min_bitrate: i32);
+    fn receiver_cc_set_max_bitrate(cc: RazorController, max_bitrate: i32);
 }

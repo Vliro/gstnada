@@ -11,7 +11,7 @@ use libc::timeval;
 use once_cell::sync::Lazy;
 
 use crate::gst::prelude::PadExtManual;
-use crate::nadarx::imp::CAT;
+use crate::gccrx::imp::CAT;
 use crate::gst::Element;
 use crate::gst;
 
@@ -64,7 +64,7 @@ struct Stream {
     first_recv_ntp: u32,
 }
 
-pub struct NadaRx {
+pub struct GccRx {
     /*
      * One instance is created for each source SSRC
      */
@@ -85,9 +85,9 @@ pub struct NadaRx {
      */
     //    std::list<Stream*> streams;
 }
-impl Default for NadaRx {
+impl Default for GccRx {
     fn default() -> Self {
-        NadaRx {
+        GccRx {
             // SSRC of this RTCP session
             lastFeedbackT_ntp: 0,
             bytesReceived: 0,
@@ -127,7 +127,7 @@ impl Write for WriteToGstInfo {
     }
 }
 
-impl NadaRx {
+impl GccRx {
     pub fn ScreamReceiverPluginInit(&mut self, rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>) {
         info!(CAT, "Init");
         self.rtcp_srcpad = rtcp_srcpad;
@@ -230,7 +230,7 @@ impl NadaRx {
         EcnCe: u8,
     ) {
         /*
-         * Register received RTP packet with NadaRx
+         * Register received RTP packet with GccRx
          */
         let time_ntp = getTimeInNtp();
         self.receive(time_ntp, ssrc, recvlen, seqNr, EcnCe);
@@ -266,7 +266,7 @@ impl NadaRx {
     }
 }
 
-impl Drop for NadaRx {
+impl Drop for GccRx {
     fn drop(&mut self) {}
 }
 
@@ -472,7 +472,7 @@ impl Stream {
         }
     }
 }
-impl NadaRx {
+impl GccRx {
     pub fn createStandardizedFeedback(
         &mut self,
         time_ntp: u32,

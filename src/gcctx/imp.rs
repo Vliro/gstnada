@@ -28,9 +28,9 @@ const DEFAULT_CURRENT_MAX_BITRATE: u32 = 0;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub (crate) struct NadaController(*const std::ffi::c_void);
-unsafe impl Sync for NadaController {}
-unsafe impl Send for NadaController {}
+pub (crate) struct RazorController(*const std::ffi::c_void);
+unsafe impl Sync for RazorController {}
+unsafe impl Send for RazorController {}
 // Property value storage
 #[derive(Debug, Clone)]
 struct Settings {
@@ -38,7 +38,7 @@ struct Settings {
     current_max_bitrate: u32,
 }
 
-struct SendPtr (*const nadatx);
+struct SendPtr (*const Gcctx);
 
 unsafe impl Send for SendPtr {}
 
@@ -51,34 +51,34 @@ impl Default for Settings {
     }
 }
 
-// static STREAMTX_PTR: Option<&nadatx>  = None;
+// static STREAMTX_PTR: Option<&Gcctx>  = None;
 
 // Struct containing all the element data
 #[repr(C)]
-pub struct nadatx {
+pub struct Gcctx {
     srcpad: gst::Pad,
     sinkpad: gst::Pad,
     rtcp_srcpad: gst::Pad,
     rtcp_sinkpad: gst::Pad,
     settings: Mutex<Settings>,
     data: Mutex<VecDeque<gst::Buffer>>,
-    controller: NadaController
+    controller: RazorController
 }
 
 static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
     gst::DebugCategory::new(
-        "nadatx",
+        "Gcctx",
         gst::DebugColorFlags::empty(),
-        Some("nadatx Element"),
+        Some("Gcctx Element"),
     )
 });
 
 
 
-impl Drop for nadatx {
+impl Drop for Gcctx {
     fn drop(&mut self) {
         unsafe {
-           FreeController(self.controller);
+           sender_cc_destroy(self.controller);
         }
     }
 }
@@ -101,7 +101,7 @@ impl Feedback {
     }
 }
 
-impl nadatx {
+impl Gcctx {
     // Called whenever a new buffer is passed to our sink pad. Here buffers should be processed and
     // whenever some output buffer is available have to push it out of the source pad.
     // Here we just pass through all buffers directly
@@ -111,7 +111,7 @@ impl nadatx {
     fn sink_chain(
         &self,
         pad: &gst::Pad,
-        element: &super::nadatx,
+        element: &super::Gcctx,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         // trace!(CAT, obj: pad, "gstnada Handling buffer {:?}", buffer);
@@ -133,20 +133,19 @@ impl nadatx {
         drop(rtp_buffer);
         let mut rate: u32 = 0;
         let mut force_idr: u32 = 1;
-        let ok;
         unsafe {
             let size = buffer.size().try_into().unwrap();
-            ok = OnPacket(self.controller, timestamp as u64, seq, size);
-            rate = getBitrate(self.controller) as u32;
+
+            sender_on_send_packet(self.controller, seq, size);
+         //   rate = getBitrate(self.controller) as u32;
         }
         debug!(
             CAT,
             obj: pad,
-            "NadaTX current estimate bitrate {}",
+            "Gcctx current estimate bitrate {}",
             rate,
-        );        if !ok {
-            error!(CAT, obj: element, "Errored in OnPacket in NadaTx::sink_chain");
-        }
+        );
+
         if rate != 0 {
             let mut settings = self.settings.lock().unwrap();
             rate /= 1000;
@@ -177,7 +176,7 @@ impl nadatx {
     //
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
-    fn sink_event(&self, pad: &gst::Pad, _element: &super::nadatx, event: gst::Event) -> bool {
+    fn sink_event(&self, pad: &gst::Pad, _element: &super::Gcctx, event: gst::Event) -> bool {
         log!(
             CAT,
             obj: pad,
@@ -201,7 +200,7 @@ impl nadatx {
     fn sink_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::nadatx,
+        _element: &super::Gcctx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(CAT, obj: pad, "gstnada Handling query {:?}", query);
@@ -211,7 +210,7 @@ impl nadatx {
     fn rtcp_sink_chain(
         &self,
         pad: &gst::Pad,
-        element: &super::nadatx,
+        element: &super::Gcctx,
         buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         // trace!(CAT, obj: pad, "gstnada Handling buffer {:?}", buffer);
@@ -232,11 +231,11 @@ impl nadatx {
         let mut ok = true;
         for x in data {
             unsafe {
-                ok &= OnFeedback(self.controller, since_the_epoch, x.seq,x.ts, x.ecn);
+                //ok &= OnFeedback(self.controller, since_the_epoch, x.seq,x.ts, x.ecn);
             }
         }
 
-        info!(CAT, obj: element, "nadatx parsed {} bytes", count);
+        info!(CAT, obj: element, "Gcctx parsed {} bytes", count);
         drop(bmr);
        // if res == 0 {
         self.rtcp_srcpad.push(buffer).unwrap();
@@ -254,7 +253,7 @@ impl nadatx {
     fn rtcp_sink_event(
         &self,
         pad: &gst::Pad,
-        _element: &super::nadatx,
+        _element: &super::Gcctx,
         event: gst::Event,
     ) -> bool {
         log!(
@@ -279,7 +278,7 @@ impl nadatx {
     fn rtcp_sink_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::nadatx,
+        _element: &super::Gcctx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(
@@ -299,7 +298,7 @@ impl nadatx {
     //
     // See the documentation of gst::Event and gst::EventRef to see what can be done with
     // events, and especially the gst::EventView type for inspecting events.
-    fn src_event(&self, pad: &gst::Pad, _element: &super::nadatx, event: gst::Event) -> bool {
+    fn src_event(&self, pad: &gst::Pad, _element: &super::Gcctx, event: gst::Event) -> bool {
         log!(
             CAT,
             obj: pad,
@@ -313,7 +312,7 @@ impl nadatx {
     fn rtcp_src_event(
         &self,
         pad: &gst::Pad,
-        _element: &super::nadatx,
+        _element: &super::Gcctx,
         event: gst::Event,
     ) -> bool {
         log!(
@@ -339,7 +338,7 @@ impl nadatx {
     fn src_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::nadatx,
+        _element: &super::Gcctx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(CAT, obj: pad, "gstnada Handling src query {:?}", query);
@@ -348,7 +347,7 @@ impl nadatx {
     fn rtcp_src_query(
         &self,
         pad: &gst::Pad,
-        _element: &super::nadatx,
+        _element: &super::Gcctx,
         query: &mut gst::QueryRef,
     ) -> bool {
         log!(
@@ -433,7 +432,7 @@ pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
     (ecn_list, reader.position() >> 3)
 }
 
-fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
+fn callback(stx: *const Gcctx, buf: gst::Buffer, is_push: u8) {
     trace!(
         CAT,
         "gstnada Handling buffer from scream {:?} is_push  {}",
@@ -445,17 +444,17 @@ fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
             let fls = (*stx).srcpad.pad_flags();
             //            if fls.contains(gst::PadFlags::FLUSHING) || fls.contains(gst::PadFlags::EOS)
             if fls.contains(gst::PadFlags::EOS) {
-                println!("nadatx EOS {:?}", fls);
+                println!("Gcctx EOS {:?}", fls);
                 drop(buf);
             } else if fls.contains(gst::PadFlags::FLUSHING) {
-                println!("nadatx FL {:?}", fls);
+                println!("Gcctx FL {:?}", fls);
                 drop(buf);
             } else {
                 //println!("pushing to srcpad");
                 (*stx)
                     .srcpad
                     .push(buf)
-                    .expect("nadatx callback srcpad.push failed");
+                    .expect("Gcctx callback srcpad.push failed");
             }
         }
     } else {
@@ -463,23 +462,42 @@ fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
     }
 }
 
-#[link(name = "nada")]
-extern {
-    //In kbps.
-    fn NewController(min: i32, max: i32) -> NadaController;
-    fn FreeController(c: NadaController);
-    fn OnFeedback(c: NadaController, now_us: u64, seq: u16, ts: u64, ecn: u8) -> bool;
-    fn OnPacket(c: NadaController, now_us: u64, seq: u16, size: u32) -> bool;
-    fn getBitrate(c: NadaController) -> f32;
+extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32) {
+
+}
+
+extern "C" fn pace_send(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32) {
+
+}
+
+#[link(name = "cc", kind = "static")]
+#[link(name = "estimator", kind = "static")]
+#[link(name = "common", kind = "static")]
+#[link(name = "pacing", kind = "static")]
+extern "C" {
+    #[allow(improper_ctypes)]
+    fn sender_cc_create(trigger: *const u8, bitrate_cb:
+    extern "C" fn(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32), handler: *const u8,
+                        pace_send_func: extern "C" fn(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32),
+                        queue_ms: i32) -> RazorController;
+    fn sender_cc_destroy(cc: RazorController);
+    fn sender_cc_heartbeat(cc: RazorController);
+    fn sender_cc_add_pace_packet(cc: RazorController, packet_id: u32, retrans: i32, size: usize);
+    fn sender_on_send_packet(cc: RazorController, seq: u16, size: usize);
+    fn sender_on_feedback(cc: RazorController, feedback: *const u8, size: i32);
+    fn sender_cc_update_rtt(cc: RazorController, rtt: i32);
+    fn sender_cc_set_bitrates(cc: RazorController, min: u32, start: u32, max: u32);
+    fn sender_cc_get_pacer_queue_ms(cc: RazorController);
+    fn sender_cc_get_first_packet_ts(cc: RazorController);
 }
 
 // This trait registers our type with the GObject object system and
 // provides the entry points for creating a new instance and setting
 // up the class data
 #[glib::object_subclass]
-impl ObjectSubclass for nadatx {
-    const NAME: &'static str = "Rsnadatx";
-    type Type = super::nadatx;
+impl ObjectSubclass for Gcctx {
+    const NAME: &'static str = "RsGcctx";
+    type Type = super::Gcctx;
     type ParentType = gst::Element;
 
     // Called when a new instance is to be created. We need to return an instance
@@ -492,30 +510,30 @@ impl ObjectSubclass for nadatx {
         // - Catch panics from the pad functions and instead of aborting the process
         //   it will simply convert them into an error message and poison the element
         //   instance
-        // - Extract our nadatx struct from the object instance and pass it to us
+        // - Extract our Gcctx struct from the object instance and pass it to us
         //
         // Details about what each function is good for is next to each function definition
         let templ = klass.pad_template("sink").unwrap();
         let sinkpad = gst::Pad::builder_with_template(&templ, Some("sink"))
             .chain_function(|pad, parent, buffer| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |nadatx, element| nadatx.sink_chain(pad, element, buffer),
+                    |Gcctx, element| Gcctx.sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.sink_event(pad, element, event),
+                    |Gcctx, element| Gcctx.sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.sink_query(pad, element, query),
+                    |Gcctx, element| Gcctx.sink_query(pad, element, query),
                 )
             })
             .build();
@@ -523,24 +541,24 @@ impl ObjectSubclass for nadatx {
         let templ = klass.pad_template("rtcp_sink").unwrap();
         let rtcp_sinkpad = gst::Pad::builder_with_template(&templ, Some("rtcp_sink"))
             .chain_function(|pad, parent, buffer| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |nadatx, element| nadatx.rtcp_sink_chain(pad, element, buffer),
+                    |Gcctx, element| Gcctx.rtcp_sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.rtcp_sink_event(pad, element, event),
+                    |Gcctx, element| Gcctx.rtcp_sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.rtcp_sink_query(pad, element, query),
+                    |Gcctx, element| Gcctx.rtcp_sink_query(pad, element, query),
                 )
             })
             .build();
@@ -548,17 +566,17 @@ impl ObjectSubclass for nadatx {
         let templ = klass.pad_template("src").unwrap();
         let srcpad = gst::Pad::builder_with_template(&templ, Some("src"))
             .event_function(|pad, parent, event| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.src_event(pad, element, event),
+                    |Gcctx, element| Gcctx.src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.src_query(pad, element, query),
+                    |Gcctx, element| Gcctx.src_query(pad, element, query),
                 )
             })
             .build();
@@ -566,17 +584,17 @@ impl ObjectSubclass for nadatx {
         let templ = klass.pad_template("rtcp_src").unwrap();
         let rtcp_srcpad = gst::Pad::builder_with_template(&templ, Some("rtcp_src"))
             .event_function(|pad, parent, event| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.rtcp_src_event(pad, element, event),
+                    |Gcctx, element| Gcctx.rtcp_src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
-                nadatx::catch_panic_pad_function(
+                Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |nadatx, element| nadatx.rtcp_src_query(pad, element, query),
+                    |Gcctx, element| Gcctx.rtcp_src_query(pad, element, query),
                 )
             })
             .build();
@@ -587,7 +605,7 @@ impl ObjectSubclass for nadatx {
         // The debug category will be used later whenever we need to put something
         // into the debug logs
         let controller = unsafe {
-            let ptr = NewController(150, 1500);
+            let ptr = sender_cc_create(std::ptr::null(), bitrate_change, std::ptr::null(), pace_send, 50);
             ptr
         };
         let queue = Mutex::new(VecDeque::new());
@@ -603,11 +621,11 @@ impl ObjectSubclass for nadatx {
     }
 }
 
-impl nadatx {
+impl Gcctx {
 
 }
 
-fn thread_timer(ptr : *const nadatx) {
+fn thread_timer(ptr : *const Gcctx) {
     let mut guard = unsafe {(*ptr).data.lock().unwrap()};
     while let Some(obj) = guard.pop_front() {
         callback(ptr, obj, true as u8);
@@ -615,13 +633,13 @@ fn thread_timer(ptr : *const nadatx) {
 }
 
 // Implementation of glib::Object virtual methods
-impl ObjectImpl for nadatx {
+impl ObjectImpl for Gcctx {
     // Called right after construction of a new instance
     fn constructed(&self, obj: &Self::Type) {
         // Call the parent class' ::constructed() implementation first
         self.parent_constructed(obj);
 
-        // Here we actually add the pads we created in nadatx::new() to the
+        // Here we actually add the pads we created in Gcctx::new() to the
         // element so that GStreamer is aware of their existence.
         obj.add_pad(&self.sinkpad).unwrap();
         obj.add_pad(&self.rtcp_sinkpad).unwrap();
@@ -645,21 +663,21 @@ impl ObjectImpl for nadatx {
                 glib::ParamSpecString::new(
                     "stats",
                     "Stats",
-                    "nadatx get_property lib stats in csv format",
+                    "Gcctx get_property lib stats in csv format",
                     None,
                     glib::ParamFlags::READWRITE,
                 ),
                 glib::ParamSpecString::new(
                     "stats-clear",
                     "StatsClear",
-                    "nadatx get_property lib stats in csv format and clear counters",
+                    "Gcctx get_property lib stats in csv format and clear counters",
                     None,
                     glib::ParamFlags::READWRITE,
                 ),
                 glib::ParamSpecString::new(
                     "stats-header",
                     "StatsHeader",
-                    "nadatx get_property lib stats-header in csv format",
+                    "Gcctx get_property lib stats-header in csv format",
                     None,
                     glib::ParamFlags::READWRITE,
                 ),
@@ -801,10 +819,10 @@ impl ObjectImpl for nadatx {
 }
 
 // Implementation of gst::Element virtual methods
-impl GstObjectImpl for nadatx {
+impl GstObjectImpl for Gcctx {
 
 }
-impl ElementImpl for nadatx {
+impl ElementImpl for Gcctx {
     // Set the element specific metadata. This information is what
     // is visible from gst-inspect-1.0 and can also be programatically
     // retrieved from the gst::Registry after initial registration
@@ -812,9 +830,9 @@ impl ElementImpl for nadatx {
     fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
         static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
             gst::subclass::ElementMetadata::new(
-                "nadatx",
+                "Gcctx",
                 "Generic",
-                "pass RTP packets to nadatx",
+                "pass RTP packets to Gcctx",
                 "Jacob Teplitsky <jacob.teplitsky@ericsson.com>",
             )
         });

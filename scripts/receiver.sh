@@ -18,6 +18,6 @@ fi
 
 export RECVPIPELINE="rtpbin latency=10 name=rtpbin udpsrc port=$PORT address=$LOCAL_IP ! $QUEUE $SCREAMRX ! application/x-rtp, media=video, encoding-name=H264, clock-rate=90000 ! rtpbin.recv_rtp_sink_0 rtpbin. ! rtph264depay ! h264parse ! avdec_h264 name=videodecoder ! $QUEUE ! glupload ! glcolorconvert ! fpsdisplaysink video-sink=\"glimagesinkelement\" rtpbin.send_rtcp_src_0 ! funnel name=f ! $QUEUE ! udpsink host=$DST_IP port=$PORT sync=false async=false $SCREAMRX_RTCP "
 echo $RECVPIPELINE
-#export debug="nadarx:5"
+#export debug="gccrx:5"
 killall -9 scream_receiver
 ../target/debug/scream_receiver
