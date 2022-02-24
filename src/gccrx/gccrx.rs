@@ -79,7 +79,7 @@ pub struct GccRx {
     nReportedRtpPackets: usize,
     streams: HashMap<u32, Stream>,
     //    socket: Option<UdpSocket>,
-    rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>,
+    pub rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>,
     /*
      * Variables for multiple steams handling
      */

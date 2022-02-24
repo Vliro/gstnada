@@ -730,8 +730,6 @@ impl ObjectImpl for Gcctx {
                     "Changing params  to {}",
                     settings.params.as_ref().unwrap()
                 );
-                let s0 = settings.params.as_ref().unwrap().as_str();
-                let s = CString::new(s0).expect("CString::new failed");
                 let ptr : SendPtr = SendPtr(self);
                 thread::spawn( || {
                     let p = ptr;

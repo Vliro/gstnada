@@ -9,11 +9,14 @@ use crate::gst;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use gstreamer::{debug, log, trace};
 
 pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
 pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
+use libc::time;
 
 use once_cell::sync::Lazy;
 
@@ -92,7 +95,10 @@ impl Gccrx {
         let ecn_ce: u8 = 0;
         {
             let mut screamrx = self.lib_data.lock().unwrap();
-            screamrx.ScreamReceiver(size, seq, payload_type, timestamp, ssrc, marker, ecn_ce);
+            unsafe {
+                receiver_cc_on_received(self.controller, seq, timestamp, size as usize, 0);
+            }
+            //screamrx.ScreamReceiver(size, seq, payload_type, timestamp, ssrc, marker, ecn_ce);
         }
         self.srcpad.push(buffer)
     }
@@ -469,6 +475,14 @@ impl ElementImpl for Gccrx {
                     let mut screamrx = self.lib_data.lock().unwrap();
                     log!(CAT, "gccrx.ScreamReceiverPluginInit()");
                     screamrx.ScreamReceiverPluginInit(self.rtcp_srcpad.clone());
+                    let ptr : SendPtr = SendPtr(self);
+                    thread::spawn( || {
+                        let p = ptr;
+                        loop {
+                            thread::sleep(Duration::from_millis(5));
+                            thread_timer(p.0);
+                        }
+                    });
                 }
 
                 debug!(CAT, obj: element, "Waiting for 1s before retrying");
@@ -507,7 +521,26 @@ impl ElementImpl for Gccrx {
 }
 
 extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usize) {
+    unsafe {
+        let d: *const Mutex<gccrx::GccRx> = cast_from_raw_pointer(handler);
+     //   &*d
+        let buf = gst::Buffer::from_slice(std::slice::from_raw_parts(payload, size));
+        let t = &(*d).lock().unwrap().rtcp_srcpad;
+        if let Some(obj) = t {
+            obj.lock().unwrap().push(buf);
+        }
+    };
+    //feedback here
+}
 
+fn thread_timer(ptr : *const Gccrx) {
+    unsafe {
+        receiver_cc_heartbeat((*ptr).controller);
+    }
+    //let mut guard = unsafe {(*ptr).data.lock().unwrap()};
+    //while let Some(obj) = guard.pop_front() {
+   //     callback(ptr, obj, true as u8);
+   // }
 }
 
 #[link(name = "cc", kind = "static")]
