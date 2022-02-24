@@ -101,7 +101,7 @@ pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
     })
     .expect("failed to add bus watch");
     let p = pipeline_clone.clone();
-    thread::spawn(move || {
+   /* thread::spawn(move || {
         let bin = p.dynamic_cast_ref::<gst::Bin>().unwrap();
         loop {
             time_id.wait().0.unwrap();
@@ -114,7 +114,7 @@ pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
             //println!("Bandwidth {}",prop);
            // println!("Video bandwidth {}",video.property::<u32>("bitrate"));
         }
-    });
+    });*/
 
     main_loop.run();
     pipeline_clone

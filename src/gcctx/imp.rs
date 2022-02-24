@@ -7,12 +7,13 @@ use gst::subclass::prelude::*;
 
 use std::convert::TryInto;
 use std::ffi::CString;
+use std::sync::atomic::AtomicPtr;
 use std::{thread, time};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use bitreader::BitReader;
-use gstreamer::{debug, error, info, log, trace};
+use gstreamer::{Bin, debug, error, info, log, trace};
 
 use gstreamer_video as gstv;
 
@@ -21,7 +22,8 @@ pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
 pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
 use hashbrown::HashMap;
-
+use core::sync::atomic::Ordering::Relaxed;
+use gstreamer_sys::GstBin;
 use once_cell::sync::Lazy;
 use crate::gccrx::{cast_from_raw_pointer, cast_to_raw_pointer};
 use crate::gst;
@@ -43,9 +45,11 @@ struct Settings {
     current_max_bitrate: u32,
 }
 
-struct SendPtr(*const Gcctx);
-
-unsafe impl Send for SendPtr {}
+struct Data {
+    pub gx: *const Gcctx,
+    pub ctrl: Mutex<RazorController>
+}
+unsafe impl Send for Data {}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -72,7 +76,7 @@ pub struct Gcctx {
     rtcp_sinkpad: gst::Pad,
     settings: Mutex<Settings>,
     data: Mutex<HashMap<u32, gst::Buffer>>,
-    controller: Option<RazorController>,
+    controller: Mutex<RazorController>,
     clock_wait: Mutex<ClockWait>,
 }
 
@@ -88,7 +92,7 @@ static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 impl Drop for Gcctx {
     fn drop(&mut self) {
         unsafe {
-            sender_cc_destroy(self.controller.unwrap());
+            self.with_controller(|c| sender_cc_destroy(c));
         }
     }
 }
@@ -114,6 +118,12 @@ impl Feedback {
 }
 
 impl Gcctx {
+
+    fn with_controller(&self, f : impl FnOnce(RazorController)) {
+        let c = self.controller.lock().unwrap();
+        f(*c);
+        drop(c);
+    }
     // Called whenever a new buffer is passed to our sink pad. Here buffers should be processed and
     // whenever some output buffer is available have to push it out of the source pad.
     // Here we just pass through all buffers directly
@@ -143,16 +153,15 @@ impl Gcctx {
             timestamp
         );
         drop(rtp_buffer);
+        let size = buffer.size().try_into().unwrap();
         let mut force_idr: u32 = 1;
+        {
+            self.data.lock().unwrap().insert(seq as u32, buffer);
+        }
         unsafe {
-            let size = buffer.size().try_into().unwrap();
-
-            sender_cc_add_pace_packet(self.controller.unwrap(), seq as u32, 1, size);
+            self.with_controller(|c|  sender_cc_add_pace_packet(c, seq as u32, 0, size));
         }
 
-
-
-        self.data.lock().unwrap().insert(seq as u32, buffer);
         if force_idr != 0 {
             let event = gstv::UpstreamForceKeyUnitEvent::builder()
                 .all_headers(true)
@@ -217,19 +226,10 @@ impl Gcctx {
             "gstnada Handling rtcp buffer size {} ",
             buffer_size
         );
-
-        let (data, count) = parse_twcc(bmrsl);
-        let since_the_epoch = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .expect("Time went backwards").as_micros() as u64;
-        let mut ok = true;
-        for x in data {
-            unsafe {
-                //ok &= OnFeedback(self.controller, since_the_epoch, x.seq,x.ts, x.ecn);
-            }
+        unsafe {
+            self.with_controller(|c| sender_on_feedback(c, bmrsl.as_ptr(), buffer_size as i32));
         }
-
-        info!(CAT, obj: element, "Gcctx parsed {} bytes", count);
+      
         drop(bmr);
         // if res == 0 {
         self.rtcp_srcpad.push(buffer).unwrap();
@@ -360,9 +360,9 @@ pub(crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
     assert_eq!(_v, 2);
     let padding = reader.read_u8(1).unwrap();
     let _fmt = reader.read_u8(5).unwrap();
-    assert_eq!(_fmt, 15);
+    //assert_eq!(_fmt, 15);
     let _pt = reader.read_u8(8).unwrap();
-    assert_eq!(_pt, 205);
+   // assert_eq!(_pt, 205);
     let length = reader.read_u16(16).unwrap();
     let ssrc_send = reader.read_u32(32).unwrap();
     let ssrc_media = reader.read_u32(32).unwrap();
@@ -436,7 +436,11 @@ fn on_send_packet(stx: *const Gcctx, id: u32, is_push: u8) {
 
     if is_push == 1 {
         unsafe {
-            let buf = (*stx).data.lock().unwrap().remove(&id).unwrap();
+            let buf =
+            {
+                let mut guard = (*stx).data.lock().unwrap();
+                guard.remove(&id).unwrap()
+            };
             let fls = (*stx).srcpad.pad_flags();
             //            if fls.contains(gst::PadFlags::FLUSHING) || fls.contains(gst::PadFlags::EOS)
             if fls.contains(gst::PadFlags::EOS) {
@@ -446,7 +450,6 @@ fn on_send_packet(stx: *const Gcctx, id: u32, is_push: u8) {
                 println!("Gcctx FL {:?}", fls);
                 drop(buf);
             } else {
-                //println!("pushing to srcpad");
                 (*stx)
                     .srcpad
                     .push(buf)
@@ -572,7 +575,10 @@ impl ObjectSubclass for Gcctx {
         // The debug category will be used later whenever we need to put something
         // into the debug logs
         let queue = Mutex::new(HashMap::new());
-
+        let data = Box::leak(Box::new(Data {
+            ctrl: Mutex::new(RazorController(std::ptr::null())),
+            gx: std::ptr::null(),
+        }));
         let mut ret = Self {
             srcpad,
             sinkpad,
@@ -580,32 +586,32 @@ impl ObjectSubclass for Gcctx {
             rtcp_sinkpad,
             settings,
             data: queue,
-            controller: None,
+            controller: Mutex::new(RazorController(std::ptr::null_mut())),
             clock_wait: Mutex::new(ClockWait {
                 clock_id: None,
                 _flushing: true,
             }),
         };
-        let controller = unsafe {
-            let ptr = sender_cc_create(cast_to_raw_pointer(&ret), bitrate_change, cast_to_raw_pointer(&ret), pace_send, 50);
-            ptr
-        };
-        ret.controller = Some(controller);
         ret
     }
 }
 
 impl Gcctx {}
 
+/**
+    Returns true if the bitrate was changed.
+**/
 fn thread_timer(ptr: &Gcctx) -> bool {
     unsafe {
-        let cur_bitrate = {
-            ptr.settings.lock().unwrap().current_max_bitrate
-        };
-        sender_cc_heartbeat(ptr.controller.unwrap());
-        let new_bitrate = {
-            ptr.settings.lock().unwrap().current_max_bitrate
-        };
+        let cur_bitrate;
+        {
+            cur_bitrate = ptr.settings.lock().unwrap().current_max_bitrate;
+        }
+        ptr.with_controller(|c| sender_cc_heartbeat(c));
+        let new_bitrate;
+        {
+            new_bitrate = ptr.settings.lock().unwrap().current_max_bitrate;
+        }
         cur_bitrate != new_bitrate
     }
 }
@@ -872,6 +878,12 @@ impl ElementImpl for Gcctx {
         info!(CAT, obj: element, "Changing state {:?}", transition);
         match transition {
             gst::StateChange::NullToReady => {
+                unsafe {
+                    let ptr = sender_cc_create(cast_to_raw_pointer(self), bitrate_change, cast_to_raw_pointer(self), pace_send, 50);
+                    *self.controller.lock().unwrap() = ptr;
+                    sender_cc_set_bitrates(ptr, 50*1000, 1000*200, 1000*2000);
+                    ptr
+                };
                 debug!(CAT, obj: element, "Waiting for 1s before retrying");
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
@@ -885,9 +897,15 @@ impl ElementImpl for Gcctx {
                             None => return,
                             Some(element) => element,
                         };
+                        //println!("{:?}", &element.parent().unwrap());
+                        if let Some(e) = element().unwrap().dynamic_cast_ref::<Bin>() {
+                            if let Some(val) = e.by_name_recurse_up("rtpjitterbuffer") {
+                                println!("GOT VAL {:?}", &val);
+                            }
+                        }
                         let lib_data = Gcctx::from_instance(&element);
-
                         if thread_timer(&lib_data) {
+                            println!("bitrate change");
                             element.notify("current-max-bitrate")
                         }
                     })
@@ -908,7 +926,7 @@ impl ElementImpl for Gcctx {
 
 
 extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u32) {
-    let gcc: *const Gcctx = unsafe {
+    let gcc : *const Gcctx = unsafe {
         cast_from_raw_pointer(trigger)
     };
     unsafe {
@@ -916,6 +934,7 @@ extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u3
         let old_br = guard.current_max_bitrate;
         guard.current_max_bitrate = bitrate;
         drop(guard);
+        println!("Bitrate old: {}, Bitrate new: {}", old_br, bitrate);
     }
 }
 

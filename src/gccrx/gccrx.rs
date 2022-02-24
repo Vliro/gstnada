@@ -77,7 +77,7 @@ pub struct GccRx {
     ix: i32,
     ackDiff: i32,
     nReportedRtpPackets: usize,
-    controller: Option<RazorController>,
+    controller: Arc<Mutex<Option<RazorController>>>,
     streams: HashMap<u32, Stream>,
     //    socket: Option<UdpSocket>,
     pub rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>,
@@ -102,7 +102,7 @@ impl Default for GccRx {
             // ackDiff: -1,
             // ackDiff: 1,
             nReportedRtpPackets: kReportedRtpPackets,
-            controller: None,
+            controller: Arc::new(Mutex::new(None)),
             streams: HashMap::new(),
             // socket: None,
             rtcp_srcpad: None,
@@ -132,8 +132,8 @@ impl Write for WriteToGstInfo {
 
 impl GccRx {
 
-    pub fn set_controller(&mut self, c : RazorController) {
-        self.controller = Some(c)
+    pub fn set_controller(&mut self, c : Arc<Mutex<Option<RazorController>>>) {
+        self.controller = c
     }
 
     pub fn ScreamReceiverPluginInit(&mut self, rtcp_srcpad: Option<Arc<Mutex<gst::Pad>>>) {
@@ -255,10 +255,16 @@ impl GccRx {
         }
     }
 
+    fn with_controller(&self, f : impl FnOnce(RazorController)) {
+        let c = self.controller.lock().unwrap();
+        f((*c).unwrap());
+        drop(c);
+    }
+
     //Every 500µs.
     pub fn periodic_flush(&mut self) {
         unsafe {
-            receiver_cc_heartbeat(self.controller.unwrap());
+            self.with_controller(|c| receiver_cc_heartbeat(c));
         }
         /*let time_ntp = getTimeInNtp();
         let rtcpFbInterval_ntp = self.getRtcpFbInterval();

@@ -52,7 +52,7 @@ pub struct Gccrx {
     sinkpad: gst::Pad,
     lib_data: Mutex<gccrx::GccRx>,
     clock_wait: Mutex<ClockWait>,
-    controller: RazorController,
+    controller: Arc<Mutex<Option<RazorController>>>,
 }
 
 pub static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
@@ -64,6 +64,11 @@ pub static CAT: Lazy<gst::DebugCategory> = Lazy::new(|| {
 });
 
 impl Gccrx {
+    fn with_controller(&self, f : impl FnOnce(RazorController)) {
+        let c = self.controller.lock().unwrap();
+        f(c.unwrap());
+        drop(c);
+    }
     // Called whenever a new buffer is passed to our sink pad. Here buffers should be processed and
     // whenever some output buffer is available have to push it out of the source pad.
     // Here we just pass through all buffers directly
@@ -99,7 +104,7 @@ impl Gccrx {
         {
             let mut screamrx = self.lib_data.lock().unwrap();
             unsafe {
-                receiver_cc_on_received(self.controller, seq, timestamp, size as usize, 0);
+                self.with_controller(|c| receiver_cc_on_received(c, seq, timestamp, size as usize, 0));
             }
             //screamrx.ScreamReceiver(size, seq, payload_type, timestamp, ssrc, marker, ecn_ce);
         }
@@ -344,10 +349,8 @@ impl ObjectSubclass for Gccrx {
         });
         let lib_data : Mutex<GccRx> = Mutex::new(Default::default());
 
-        let controller = unsafe {
-            receiver_cc_create(150, 1500, 32, cast_to_raw_pointer(&lib_data), send_feedback_cb)
-        };
-        lib_data.lock().unwrap().set_controller(controller);
+        let controller = Arc::new(Mutex::new( None));
+        lib_data.lock().unwrap().set_controller(controller.clone());
         // Return an instance of our struct and also include our debug category here.
         // The debug category will be used later whenever we need to put something
         // into the debug logs
@@ -357,7 +360,7 @@ impl ObjectSubclass for Gccrx {
             sinkpad,
             lib_data,
             clock_wait,
-            controller
+            controller: controller
         }
     }
 }
@@ -365,7 +368,7 @@ impl ObjectSubclass for Gccrx {
 impl Drop for Gccrx {
     fn drop(&mut self) {
         unsafe {
-            receiver_cc_destroy(self.controller);
+            self.with_controller(|f| receiver_cc_destroy(f));
         }
     }
 }
@@ -472,7 +475,12 @@ impl ElementImpl for Gccrx {
                     log!(CAT, "gccrx.ScreamReceiverPluginInit()");
                     screamrx.ScreamReceiverPluginInit(self.rtcp_srcpad.clone());
                 }
-
+                unsafe {
+                    if let Some(ref d) = self.rtcp_srcpad {
+                        let razor = receiver_cc_create(150, 1500, 32, cast_to_raw_pointer(d), send_feedback_cb);
+                        *self.controller.lock().unwrap() = Some(razor);
+                    }
+                }
                 debug!(CAT, obj: element, "Waiting for 1s before retrying");
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
@@ -511,15 +519,12 @@ impl ElementImpl for Gccrx {
 
 extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usize) {
     unsafe {
-        let d: *const Mutex<gccrx::GccRx> = cast_from_raw_pointer(handler);
+        let d: *const Arc<Mutex<gst::Pad>> = cast_from_raw_pointer(handler);
      //   &*d
         let buf = gst::Buffer::from_slice(std::slice::from_raw_parts(payload, size));
-        let t = &(*d).lock().unwrap().rtcp_srcpad;
-        if let Some(obj) = t {
-            obj.lock().unwrap().push(buf);
-        }
+
+        (*d).lock().unwrap().push(buf).unwrap();
     };
-    //feedback here
 }
 
 #[link(name = "cc", kind = "static")]
