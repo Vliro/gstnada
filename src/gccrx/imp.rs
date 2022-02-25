@@ -480,7 +480,7 @@ impl ElementImpl for Gccrx {
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
                 let mut clock_wait = self.clock_wait.lock().unwrap();
-                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(500));
+                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(50000));
                 clock_wait.clock_id = Some(timeout.clone());
                 let element_weak = element.downgrade();
                 timeout
@@ -516,6 +516,9 @@ extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usi
     unsafe {
         let d: *const Arc<Mutex<gst::Pad>> = cast_from_raw_pointer(handler);
      //   &*d
+     //   println!("size {size}");
+     //   let slice = std::slice::from_raw_parts(payload, size);
+     //   println!("{:?}", slice);
         let buf = gst::Buffer::from_slice(std::slice::from_raw_parts(payload, size));
 
         match (*d).lock().unwrap().push(buf) {
@@ -533,6 +536,7 @@ extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usi
 #[link(name = "estimator", kind = "static")]
 #[link(name = "common", kind = "static")]
 #[link(name = "pacing", kind = "static")]
+#[link(name = "bbr", kind = "static")]
 extern "C" {
     #[allow(improper_ctypes)]
     pub (crate) fn receiver_cc_create(min_bitrate: i32, max_bitrate: i32, packet_header_size: i32, handler: *const u8,

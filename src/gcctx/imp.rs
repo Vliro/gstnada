@@ -909,7 +909,7 @@ impl ElementImpl for Gcctx {
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
                 let mut clock_wait = self.clock_wait.lock().unwrap();
-                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(500));
+                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(50000));
                 clock_wait.clock_id = Some(timeout.clone());
                 let element_weak = element.downgrade();
                 timeout
