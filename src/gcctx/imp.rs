@@ -898,14 +898,13 @@ impl ElementImpl for Gcctx {
                             Some(element) => element,
                         };
                         //println!("{:?}", &element.parent().unwrap());
-                        if let Some(e) = element().unwrap().dynamic_cast_ref::<Bin>() {
-                            if let Some(val) = e.by_name_recurse_up("rtpjitterbuffer") {
+                        if let Some(e) = element.dynamic_cast_ref::<Bin>() {
+                            if let Some(val) = e.by_name_recurse_up("rtpbin") {
                                 println!("GOT VAL {:?}", &val);
                             }
                         }
                         let lib_data = Gcctx::from_instance(&element);
                         if thread_timer(&lib_data) {
-                            println!("bitrate change");
                             element.notify("current-max-bitrate")
                         }
                     })
