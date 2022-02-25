@@ -523,7 +523,14 @@ extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usi
      //   &*d
         let buf = gst::Buffer::from_slice(std::slice::from_raw_parts(payload, size));
 
-        (*d).lock().unwrap().push(buf).unwrap();
+        match (*d).lock().unwrap().push(buf) {
+            Ok(_e) => {
+
+            },
+            Err(e) => {
+                eprintln!("{e}");
+            }
+        }
     };
 }
 

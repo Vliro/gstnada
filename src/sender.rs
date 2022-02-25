@@ -35,7 +35,7 @@ fn main() {
 
 pub fn start(main_loop: &glib::MainLoop) -> Result<(), Error> {
     let mut ratemultiply_opt: Option<i32> = None;
-    let mut verbose = false;
+    let mut verbose = true;
     {
         // this block limits scope of borrows by ap.refer() method
         let mut ap = ArgumentParser::new();

@@ -489,21 +489,21 @@ impl ObjectSubclass for Gcctx {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |Gcctx, element| Gcctx.sink_chain(pad, element, buffer),
+                    |gcctx, element| gcctx.sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.sink_event(pad, element, event),
+                    |gcctx, element| gcctx.sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.sink_query(pad, element, query),
+                    |gcctx, element| gcctx.sink_query(pad, element, query),
                 )
             })
             .build();
@@ -514,21 +514,21 @@ impl ObjectSubclass for Gcctx {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || Err(gst::FlowError::Error),
-                    |Gcctx, element| Gcctx.rtcp_sink_chain(pad, element, buffer),
+                    |gcctx, element| gcctx.rtcp_sink_chain(pad, element, buffer),
                 )
             })
             .event_function(|pad, parent, event| {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.rtcp_sink_event(pad, element, event),
+                    |gcctx, element| gcctx.rtcp_sink_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.rtcp_sink_query(pad, element, query),
+                    |gcctx, element| gcctx.rtcp_sink_query(pad, element, query),
                 )
             })
             .build();
@@ -539,14 +539,14 @@ impl ObjectSubclass for Gcctx {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.src_event(pad, element, event),
+                    |gcctx, element| gcctx.src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.src_query(pad, element, query),
+                    |gcctx, element| gcctx.src_query(pad, element, query),
                 )
             })
             .build();
@@ -557,14 +557,14 @@ impl ObjectSubclass for Gcctx {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.rtcp_src_event(pad, element, event),
+                    |gcctx, element| gcctx.rtcp_src_event(pad, element, event),
                 )
             })
             .query_function(|pad, parent, query| {
                 Gcctx::catch_panic_pad_function(
                     parent,
                     || false,
-                    |Gcctx, element| Gcctx.rtcp_src_query(pad, element, query),
+                    |gcctx, element| gcctx.rtcp_src_query(pad, element, query),
                 )
             })
             .build();
@@ -674,6 +674,15 @@ impl ObjectImpl for Gcctx {
                     DEFAULT_CURRENT_MAX_BITRATE,
                     glib::ParamFlags::READWRITE,
                 ),
+                glib::ParamSpecUInt64::new(
+                    "rtt",
+                    "Round trip time",
+                    "Round trip time",
+                    0,
+                    u64::MAX,
+                    0,
+                    glib::ParamFlags::READWRITE,
+                ),
             ]
         });
         PROPERTIES.as_ref()
@@ -685,7 +694,7 @@ impl ObjectImpl for Gcctx {
             vec![
                 Signal::builder(
                     "heartbeat",
-                    &[String::static_type().into()],
+                    &[],
                     glib::Type::UNIT.into(),
                 ).build(),
             ]
@@ -719,6 +728,18 @@ impl ObjectImpl for Gcctx {
                 //unsafe {
                 //    ScreamSenderPluginInit(s.as_ptr(), self, callback);
                 // }
+            }
+            "rtt" => {
+                match value.get::<u64>() {
+                    Ok(val) if val > 0 => {
+                        println!("RTT {}", val);
+                        self.with_controller(|c| unsafe {
+                            sender_cc_update_rtt(c, val as i32);
+                        })
+                    }
+                    _ => ()
+                }
+
             }
             "current-max-bitrate" => {
                 let mut settings = self.settings.lock().unwrap();
@@ -903,6 +924,7 @@ impl ElementImpl for Gcctx {
                                 println!("GOT VAL {:?}", &val);
                             }
                         }
+                        element.emit_by_name::<()>("heartbeat", &[]);
                         let lib_data = Gcctx::from_instance(&element);
                         if thread_timer(&lib_data) {
                             element.notify("current-max-bitrate")
@@ -933,7 +955,6 @@ extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u3
         let old_br = guard.current_max_bitrate;
         guard.current_max_bitrate = bitrate;
         drop(guard);
-        println!("Bitrate old: {}, Bitrate new: {}", old_br, bitrate);
     }
 }
 

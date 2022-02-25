@@ -1,6 +1,6 @@
 use crate::gstv::prelude::ClockExt;
 use crate::gstv::prelude::GstBinExt;
-use glib::ObjectExt;
+use glib::{Cast, ObjectExt, ToValue};
 use std::convert::TryInto;
 use std::env;
 use std::fs::File;
@@ -12,6 +12,7 @@ use crate::gstv::prelude::PipelineExt;
 
 use glib::timeout_add;
 use glib::Continue;
+use gst::{Bin, Element, Structure};
 use gstreamer_video as gstv;
 
 #[derive(Default)]
@@ -54,34 +55,34 @@ pub fn stats(bin: &gst::Pipeline, screamtx_name_opt: &Option<String>) {
     };
 
     let screamtx_e_clone = screamtx_e.clone();
-  /*  let stats_str_header = screamtx_e
-        .property("stats-header")
-        .expect("Failed to get stats-header")
-        .get::<String>()
-        .expect("stats");
+    /*  let stats_str_header = screamtx_e
+          .property("stats-header")
+          .expect("Failed to get stats-header")
+          .get::<String>()
+          .expect("stats");
 
-    writeln!(out, "time-ns, {}", stats_str_header).unwrap();
+      writeln!(out, "time-ns, {}", stats_str_header).unwrap();
 
-    let outp_opt: Option<Arc<Mutex<File>>> = Some(Arc::new(Mutex::new(out)));
+      let outp_opt: Option<Arc<Mutex<File>>> = Some(Arc::new(Mutex::new(out)));
 
-    timeout_add(
-        Duration::from_millis(sender_stats_timer as u64),
-        move || {
-            let stats_str = screamtx_e_clone
-                .property("stats")
-                .expect("Failed to get stats")
-                .get::<String>()
-                .expect("stats");
+      timeout_add(
+          Duration::from_millis(sender_stats_timer as u64),
+          move || {
+              let stats_str = screamtx_e_clone
+                  .property("stats")
+                  .expect("Failed to get stats")
+                  .get::<String>()
+                  .expect("stats");
 
-            let tm = pipeline_clock.time();
-            let ns = tm.unwrap().nseconds();
-            let out_p = outp_opt.as_ref().unwrap();
-            let mut fd = out_p.lock().unwrap();
+              let tm = pipeline_clock.time();
+              let ns = tm.unwrap().nseconds();
+              let out_p = outp_opt.as_ref().unwrap();
+              let mut fd = out_p.lock().unwrap();
 
-            writeln!(fd, "{},{}", ns, stats_str).unwrap();
-            Continue(true)
-        },
-    );*/
+              writeln!(fd, "{},{}", ns, stats_str).unwrap();
+              Continue(true)
+          },
+      );*/
 }
 
 lazy_static! {
@@ -109,14 +110,14 @@ pub fn run_time_bitrate_set(
     let encoder_name = encoder_name_opt.as_ref().unwrap();
     println!("{:?}", encoder_name);
     let video = bin.by_name(encoder_name).expect("Failed to by_name video");
-
+    let pipe = bin.clone();
     let video_cloned = video;
     match screamtx_name_opt.as_ref() {
         Some(scream_name) => {
             match bin.by_name(scream_name) {
                 Some(scream) => {
                     let scream_cloned = scream.clone();
-                    scream.connect("notify::current-max-bitrate", false,  move |_values| {
+                    scream.connect("notify::current-max-bitrate", false, move |_values| {
                         let rate = scream_cloned.try_property::<u32>("current-max-bitrate")
                             .expect("Failed to get bitrate");
                         let rate = rate * ratemultiply;
@@ -143,11 +144,28 @@ pub fn run_time_bitrate_set(
                                 rate_info_prev.count = 0;
                             }
                         } else {
-                                rate_info_prev.count += 1;
-                                // println!("count {}", rate_info_prev.count);
+                            rate_info_prev.count += 1;
+                            // println!("count {}", rate_info_prev.count);
                         }
                         None
                     });
+                    let scream_cloned = scream.clone();
+                    if let Some(v) = pipe.by_name("r") {
+                        if let Ok(rtp) = v.dynamic_cast::<Bin>() {
+                            rtp.connect("on-new-ssrc", true, move |_values| {
+                                let el = _values[0].get::<Element>().unwrap().emit_by_name::<Element>("request-jitterbuffer", &[&_values[1]]);
+                                scream_cloned.connect("heartbeat", false, move |_valuess| {
+                                    let stats = el.property::<Structure>("stats");
+                                    if let Ok(rtt) = stats.get::<u64>("rtx-rtt") {
+                                        _valuess[0].get::<Element>().unwrap().set_property("rtt", rtt.to_value());
+                                    }
+
+                                    None
+                                });
+                                None
+                            });
+                        }
+                    }
                 }
                 None => println!("no scream signal"),
             }
