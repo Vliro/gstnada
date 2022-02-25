@@ -1,5 +1,4 @@
 use glib::prelude::*;
-use crate::gst::Element;
 use crate::gst;
 mod imp;
 

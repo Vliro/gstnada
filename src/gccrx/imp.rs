@@ -9,15 +9,11 @@ use crate::gst;
 use std::convert::TryInto;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
-use std::time::Duration;
 use gstreamer::{debug, log, trace};
 
 pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
 pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
-use gstreamer_sys::GstElement;
-use libc::time;
 
 use once_cell::sync::Lazy;
 use crate::gccrx::{cast_from_raw_pointer, cast_to_raw_pointer};
@@ -86,8 +82,8 @@ impl Gccrx {
         let seq = rtp_buffer.seq();
         let payload_type = rtp_buffer.payload_type();
         let timestamp = rtp_buffer.timestamp();
-        let ssrc = rtp_buffer.ssrc();
-        let marker = rtp_buffer.is_marker();
+        let _ssrc = rtp_buffer.ssrc();
+        let _marker = rtp_buffer.is_marker();
 
         trace!(
             CAT,
@@ -100,9 +96,8 @@ impl Gccrx {
         drop(rtp_buffer);
         let size: u32 = buffer.size().try_into().unwrap();
         // TBD get ECN
-        let ecn_ce: u8 = 0;
+        let _ecn_ce: u8 = 0;
         {
-            let mut screamrx = self.lib_data.lock().unwrap();
             unsafe {
                 self.with_controller(|c| receiver_cc_on_received(c, seq, timestamp, size as usize, 0));
             }

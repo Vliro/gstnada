@@ -5,8 +5,7 @@
 // extern crate gstreamer_video as gst_video;
 
 use gstreamer as gst;
-use gstreamer_video as gst_video;
-use gstreamer_base as gst_base;
+
 use glib;
 use gstreamer::plugin_define;
 

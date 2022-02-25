@@ -1,6 +1,5 @@
 use glib::prelude::*;
 use crate::gst;
-use crate::gst::Element;
 
 mod imp;
 #[cfg(test)]
