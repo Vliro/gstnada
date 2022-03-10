@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use bitreader::BitReader;
-use gstreamer::{Bin, debug, error, info, log, trace};
+use gstreamer::{Bin, Buffer, debug, error, info, log, trace};
 
 use gstreamer_video as gstv;
 
@@ -42,6 +42,7 @@ unsafe impl Send for RazorController {}
 #[derive(Debug, Clone)]
 struct Settings {
     params: Option<String>,
+    loss: u32,
     current_max_bitrate: u32,
 }
 
@@ -56,6 +57,7 @@ impl Default for Settings {
         Settings {
             params: None,
             current_max_bitrate: DEFAULT_CURRENT_MAX_BITRATE,
+            loss: 0,
         }
     }
 }
@@ -371,10 +373,10 @@ pub(crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
     let ref_time = reader.read_u32(24).unwrap() << 6;
     let fb_pkt_count = reader.read_u32(8).unwrap();
 
-    let mut ecn_list: Vec<Feedback> = Vec::with_capacity(fb_pkt_count as usize);
+    let mut ecn_list: Vec<Feedback> = Vec::with_capacity(packet_status as usize);
 
     let mut recv_blocks = 0;
-    for _ in 0..fb_pkt_count {
+    for _ in 0..packet_status {
         let pkt_type = reader.read_u8(1).unwrap();
         match pkt_type {
             0 => {
@@ -603,16 +605,20 @@ impl Gcctx {}
 **/
 fn thread_timer(ptr: &Gcctx) -> bool {
     unsafe {
-        let cur_bitrate;
+        let cur_bitrate =
         {
-            cur_bitrate = ptr.settings.lock().unwrap().current_max_bitrate;
-        }
+            ptr.settings.lock().unwrap().current_max_bitrate
+        };
         ptr.with_controller(|c| sender_cc_heartbeat(c));
         let new_bitrate;
         {
             new_bitrate = ptr.settings.lock().unwrap().current_max_bitrate;
         }
-        cur_bitrate != new_bitrate
+        let ret = cur_bitrate != new_bitrate;
+        if (ret) {
+            println!("New bitrate: {} Kbps", new_bitrate/1000);
+        }
+        ret
     }
 }
 
@@ -900,16 +906,26 @@ impl ElementImpl for Gcctx {
         match transition {
             gst::StateChange::NullToReady => {
                 unsafe {
-                    let ptr = sender_cc_create(cast_to_raw_pointer(self), bitrate_change, cast_to_raw_pointer(self), pace_send, 50);
+                    let ptr = sender_cc_create(cast_to_raw_pointer(self), bitrate_change, cast_to_raw_pointer(self), pace_send, 0);
                     *self.controller.lock().unwrap() = ptr;
-                    sender_cc_set_bitrates(ptr, 50*1000, 1000*200, 1000*2000);
+                    sender_cc_set_bitrates(ptr, 30*1000, 1000*30, 1000*500);
+                  //  sender_cc_update_rtt(ptr, 100);
                     ptr
                 };
-                debug!(CAT, obj: element, "Waiting for 1s before retrying");
+
+            }
+            gst::StateChange::ReadyToNull => {
+                let mut clock_wait = self.clock_wait.lock().unwrap();
+                if let Some(clock_id) = clock_wait.clock_id.take() {
+                    clock_id.unschedule();
+                }
+            },
+            gst::StateChange::PausedToPlaying => {
+                println!("Waiting for 1s before retrying");
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
                 let mut clock_wait = self.clock_wait.lock().unwrap();
-                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(50000));
+                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(5000));
                 clock_wait.clock_id = Some(timeout.clone());
                 let element_weak = element.downgrade();
                 timeout
@@ -932,12 +948,6 @@ impl ElementImpl for Gcctx {
                     })
                     .expect("Failed to wait async");
             }
-            gst::StateChange::ReadyToNull => {
-                let mut clock_wait = self.clock_wait.lock().unwrap();
-                if let Some(clock_id) = clock_wait.clock_id.take() {
-                    clock_id.unschedule();
-                }
-            }
             _ => (),
         }
         // Call the parent class' implementation of ::change_state()
@@ -950,12 +960,46 @@ extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u3
     let gcc : *const Gcctx = unsafe {
         cast_from_raw_pointer(trigger)
     };
-    unsafe {
-        let mut guard = (*gcc).settings.lock().unwrap();
-        let old_br = guard.current_max_bitrate;
-        guard.current_max_bitrate = bitrate;
-        drop(guard);
-    }
+    let mut guard = unsafe {
+       (*gcc).settings.lock().unwrap()
+    };
+    let mut l = (guard.loss + loss as u32) / 2;
+    l = std::cmp::min(l, 255 >> 1);
+    guard.loss = l;
+
+    let bit = (((1-l/255) as f32)*(bitrate as f32)) as u32;
+    guard.current_max_bitrate = bit;
+    drop(guard);
+    /*
+	double now=Simulator::Now().GetSeconds();
+	SimSender *obj=static_cast<SimSender*>(trigger);
+	uint32_t overhead_bitrate, per_packets_second, payload_bitrate, video_bitrate_kbps;
+	double loss;
+	uint8_t header_len=sizeof(sim_header_t)+sizeof(sim_segment_t);
+	uint32_t packet_size_bit=(header_len+obj->m_segmentSize)*8;
+	per_packets_second = (bitrate + packet_size_bit - 1) / packet_size_bit;
+	overhead_bitrate = per_packets_second * header_len * 8;
+	payload_bitrate = bitrate - overhead_bitrate;
+	if(obj->m_lossFraction==0)
+	{
+		obj->m_lossFraction=fraction_loss;
+	}else
+	{
+		obj->m_lossFraction=(3*obj->m_lossFraction+fraction_loss)/4;
+	}
+	loss=(double)obj->m_lossFraction/255.0;
+	if (loss > 0.5)
+		loss = 0.5;
+	video_bitrate_kbps = (uint32_t)((1.0 - loss) * payload_bitrate) / 1000;
+	NS_LOG_INFO(std::to_string(now)<<" "<<video_bitrate_kbps<<" l "<<std::to_string(loss));
+	if(!obj->m_changeBitRate.IsNull())
+	{
+		//to prevent channel overuse
+		uint32_t protect_rate=video_bitrate_kbps;
+		obj->m_changeBitRate(protect_rate);//video_bitrate_kbps
+	}
+     */
+
 }
 
 extern "C" fn pace_send(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32) {

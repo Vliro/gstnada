@@ -99,7 +99,7 @@ impl Gccrx {
         let _ecn_ce: u8 = 0;
         {
             unsafe {
-                self.with_controller(|c| receiver_cc_on_received(c, seq, timestamp, size as usize, 0));
+                self.with_controller(|c| receiver_cc_on_received(c, seq, timestamp, size as usize, 1));
             }
             //screamrx.ScreamReceiver(size, seq, payload_type, timestamp, ssrc, marker, ecn_ce);
         }
@@ -472,10 +472,19 @@ impl ElementImpl for Gccrx {
                 }
                 unsafe {
                     if let Some(ref d) = self.rtcp_srcpad {
-                        let razor = receiver_cc_create(150, 1500, 32, cast_to_raw_pointer(d), send_feedback_cb);
+                        let razor = receiver_cc_create(30, 500, 32, cast_to_raw_pointer(d), send_feedback_cb);
                         *self.controller.lock().unwrap() = Some(razor);
                     }
                 }
+
+            }
+            gst::StateChange::ReadyToNull => {
+                let mut clock_wait = self.clock_wait.lock().unwrap();
+                if let Some(clock_id) = clock_wait.clock_id.take() {
+                    clock_id.unschedule();
+                }
+            },
+            gst::StateChange::PausedToPlaying => {
                 debug!(CAT, obj: element, "Waiting for 1s before retrying");
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
@@ -497,12 +506,6 @@ impl ElementImpl for Gccrx {
                     })
                     .expect("Failed to wait async");
             }
-            gst::StateChange::ReadyToNull => {
-                let mut clock_wait = self.clock_wait.lock().unwrap();
-                if let Some(clock_id) = clock_wait.clock_id.take() {
-                    clock_id.unschedule();
-                }
-            }
             _ => (),
         }
 
@@ -514,11 +517,15 @@ impl ElementImpl for Gccrx {
 
 extern "C" fn send_feedback_cb(handler: *const u8, payload: *const u8, size: usize) {
     unsafe {
+
         let d: *const Arc<Mutex<gst::Pad>> = cast_from_raw_pointer(handler);
      //   &*d
      //   println!("size {size}");
-     //   let slice = std::slice::from_raw_parts(payload, size);
-     //   println!("{:?}", slice);
+     /*   {
+            let slice = std::slice::from_raw_parts(payload, size);
+            println!("{:?}", slice);
+
+        }*/
         let buf = gst::Buffer::from_slice(std::slice::from_raw_parts(payload, size));
 
         match (*d).lock().unwrap().push(buf) {

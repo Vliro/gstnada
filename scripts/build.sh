@@ -1,7 +1,6 @@
 SCRIPT_DIR=`pwd`
-SCREAMLIB_DIR=$SCRIPT_DIR/../../code/wrapper_lib
-cd $SCREAMLIB_DIR; cmake .; make
+SCREAMLIB_DIR=$SCRIPT_DIR/../razor
+cd $SCREAMLIB_DIR; make -j7
 cd $SCRIPT_DIR
-export RUSTFLAGS="$RUSTFLAGS -L$SCREAMLIB_DIR"
 cargo build
 
