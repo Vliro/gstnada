@@ -1,18 +1,20 @@
 use glib::prelude::*;
 use glib::subclass::{Signal, SignalType};
 use glib::subclass::prelude::*;
-
 use gst::prelude::*;
 use gst::subclass::prelude::*;
-
 use std::convert::TryInto;
 use std::ffi::CString;
 use std::{thread, time};
 use std::collections::VecDeque;
+use std::error::Error;
+use std::mem::MaybeUninit;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use bitreader::BitReader;
 use gstreamer::{debug, error, info, log, trace};
+use gstreamer_rtp::ffi::{gst_rtcp_buffer_get_first_packet, gst_rtcp_buffer_map, gst_rtcp_buffer_new, gst_rtcp_packet_move_to_next, GstRTCPBuffer, GstRTCPPacket};
 
 use gstreamer_video as gstv;
 
@@ -20,6 +22,7 @@ use gstreamer_video as gstv;
 pub use gstreamer_rtp::rtp_buffer::compare_seqnum;
 pub use gstreamer_rtp::rtp_buffer::RTPBuffer;
 pub use gstreamer_rtp::rtp_buffer::RTPBufferExt;
+use gstreamer_sys::{GST_MAP_READ, GstBuffer, GstMapInfo};
 
 use once_cell::sync::Lazy;
 use crate::gst;
@@ -61,6 +64,7 @@ pub struct nadatx {
     rtcp_srcpad: gst::Pad,
     rtcp_sinkpad: gst::Pad,
     settings: Mutex<Settings>,
+    last_base: AtomicUsize,
     data: Mutex<VecDeque<gst::Buffer>>,
     controller: NadaController
 }
@@ -160,13 +164,12 @@ impl nadatx {
             }
         }
         self.data.lock().unwrap().push_back(buffer);
-        if force_idr != 0 {
-            let event = gstv::UpstreamForceKeyUnitEvent::builder()
-                .all_headers(true)
-                .build();
-            let rc = self.sinkpad.push_event(event);
-            //println!("imp.rs: force_idr rc {} enabled 1 ", rc);
-        }
+
+        let event = gstv::UpstreamForceKeyUnitEvent::builder()
+            .all_headers(true)
+            .build();
+        self.sinkpad.push_event(event);
+
         glib::bitflags::_core::result::Result::Ok(gst::FlowSuccess::Ok)
     }
 
@@ -185,7 +188,6 @@ impl nadatx {
             event,
             event.type_()
         );
-        // println!("gstnada Handling sink event {:?}", event);
         self.srcpad.push_event(event)
     }
 
@@ -212,7 +214,7 @@ impl nadatx {
         &self,
         pad: &gst::Pad,
         element: &super::nadatx,
-        buffer: gst::Buffer,
+        mut buffer: gst::Buffer,
     ) -> Result<gst::FlowSuccess, gst::FlowError> {
         // trace!(CAT, obj: pad, "gstnada Handling buffer {:?}", buffer);
         let bmr = buffer.map_readable().unwrap();
@@ -224,23 +226,32 @@ impl nadatx {
             "gstnada Handling rtcp buffer size {} ",
             buffer_size
         );
+        let last = self.last_base.load(Ordering::Relaxed);
+        match parse_twcc(bmrsl, Some(last)) {
+            Ok((data, count)) if data.len() > 0 => {
+                self.last_base.store(data[0].seq as usize, Ordering::Relaxed);
+                let since_the_epoch = time::SystemTime::now()
+                    .duration_since(time::UNIX_EPOCH)
+                    .expect("Time went backwards").as_micros() as u64;
+                let mut ok = true;
+                for x in data {
+                    unsafe {
+                        ok &= OnFeedback(self.controller, since_the_epoch, x.seq,x.ts, x.ecn);
+                    }
+                }
 
-        let (data, count) = parse_twcc(bmrsl);
-        let since_the_epoch = time::SystemTime::now()
-            .duration_since(time::UNIX_EPOCH)
-            .expect("Time went backwards").as_micros() as u64;
-        let mut ok = true;
-        for x in data {
-            unsafe {
-                ok &= OnFeedback(self.controller, since_the_epoch, x.seq,x.ts, x.ecn);
+                info!(CAT, obj: element, "nadatx parsed {} bytes", count);
+                drop(bmr);
+                // if res == 0 {
+                if let Ok(e) = self.rtcp_srcpad.push(buffer) {
+                }
+                //   }
+            },
+            Err(e) => {
+                println!("{e}");
             }
+            _ => {}
         }
-
-        info!(CAT, obj: element, "nadatx parsed {} bytes", count);
-        drop(bmr);
-       // if res == 0 {
-        self.rtcp_srcpad.push(buffer).unwrap();
-     //   }
         glib::bitflags::_core::result::Result::Ok(gst::FlowSuccess::Ok)
     }
 
@@ -361,78 +372,63 @@ impl nadatx {
     }
 }
 
-pub (crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
+pub (crate) fn parse_twcc(data: &[u8], last: Option<usize>) -> Result<(Vec<Feedback>, u64), Box<dyn Error>> {
     let mut reader = BitReader::new(data);
-    let _v = reader.read_u8(2).unwrap();
-    assert_eq!(_v, 2);
-    let padding = reader.read_u8(1).unwrap();
-    let _fmt = reader.read_u8(5).unwrap();
-    assert_eq!(_fmt, 15);
-    let _pt = reader.read_u8(8).unwrap();
-    assert_eq!(_pt, 205);
-    let length = reader.read_u16(16).unwrap();
-    let ssrc_send = reader.read_u32(32).unwrap();
-    let ssrc_media = reader.read_u32(32).unwrap();
-    let base_seq = reader.read_u16(16).unwrap();
-    let packet_status = reader.read_u16(16).unwrap();
-    let ref_time = reader.read_u32(24).unwrap() << 6;
-    let fb_pkt_count = reader.read_u32(8).unwrap();
-
-    let mut ecn_list: Vec<Feedback> = Vec::with_capacity(fb_pkt_count as usize);
-
-    let mut recv_blocks = 0;
-    for _ in 0..fb_pkt_count {
-        let pkt_type = reader.read_u8(1).unwrap();
-        match pkt_type {
-            0 => {
-                let ecn = reader.read_u8(2).unwrap();
-                let cnt = reader.read_u16(13).unwrap();
-                for _ in 0..cnt {
-                    ecn_list.push(Feedback::new(ecn, base_seq));
-                }
-            },
-            1 => {
-                let sym_size = reader.read_u8(1).unwrap();
-                match sym_size {
-                    0 => {
-                        for _ in 0..14 {
-                            ecn_list.push(Feedback::new(reader.read_u8(1).unwrap(), base_seq));
-                        }
-                    },
-                    1 => {
-                        for _ in 1..7 {
-                            ecn_list.push(Feedback::new(reader.read_u8(2).unwrap(), base_seq));
-                        }
-                    },
-                    _ => panic!("unexpect sym_size {}", sym_size)
-                }
+    let mut ecn_list: Vec<Feedback> = Vec::new();
+    while reader.remaining() > 0 {
+        let mut packets_parsed = 0;
+        let base_seq = reader.read_u16(16)?;
+        if let Some(la) = last {
+            if la == base_seq as usize {
+                return Ok((vec![], 0));
             }
-            _ => panic!("unexpected pkt_type {}", pkt_type)
         }
-    }
-    let mut cur_time = ref_time;
-    for x in ecn_list.iter_mut().filter(|t| t.ecn == 1 || t.ecn == 2) {
-        match x.ecn {
-            1 => {
-                let mut offset = reader.read_u8(8).unwrap();
-                // in millis, 250 µs -> 0.25ms -> 1 /4 -> >> 2
-                offset = offset >> 2;
-                cur_time = cur_time + offset as u32;
-                x.ts = cur_time as u64;
-            },
-            2 => {
-                let mut offset = reader.read_u16(16).unwrap();
-                // in millis, 250 µs -> 0.25s -> 1 /4 -> >> 2
-                offset = offset >> 2;
-                cur_time = cur_time + offset as u32;
-                x.ts = cur_time as u64;
-            },
-            _ => unreachable!()
-        }
-    }
-    (ecn_list, reader.position() >> 3)
-}
+        println!("{:?}", data);
 
+        let packet_status = reader.read_u16(16)?;
+        let ref_time = reader.read_u32(24)? << 6;
+        let fb_pkt_count = reader.read_u32(8)?;
+        let mut recv_blocks = 0;
+        ecn_list = Vec::with_capacity(packet_status as usize);
+        while(packets_parsed < packet_status) {
+            let remaining_pkt = packet_status - packets_parsed;
+            let seqnum_offset = base_seq + packets_parsed;
+            let pkt_chunk = reader.read_u16(16)?;
+            if (pkt_chunk >> 15) == 1 {
+                let sym_size = ((pkt_chunk & 0x4000) >> 14) + 1;
+                let n_bits = std::cmp::min(remaining_pkt, 14 / sym_size);
+                for i in 0..n_bits {
+                    ecn_list.push(Feedback::new(reader.read_u8(sym_size as u8)?, seqnum_offset + i));
+                }
+                packets_parsed += n_bits;
+            } else {
+                let ecn = (pkt_chunk & 0x6000) >> 13;
+                let cnt = pkt_chunk & 0x1FFF;
+                let rl = std::cmp::min(remaining_pkt, cnt);
+                for i in 0..rl {
+                    ecn_list.push(Feedback::new(ecn as u8, seqnum_offset + i))
+                }
+                packets_parsed += rl;
+            }
+        }
+        let mut ts_rounded = ref_time as u64;
+        for pkt in ecn_list.iter_mut() {
+            let mut delta = 0;
+            if pkt.ecn == 1 {
+                delta = reader.read_u8(8)?;
+            } else if pkt.ecn == 2 {
+                delta = reader.read_u16(16)? as u8;
+            }
+            if pkt.ecn != 0 {
+                let mut delta_ts = (delta as u64) * 250;
+                delta_ts = ((delta_ts as f64) * 10e-6) as u64;
+                ts_rounded += delta_ts as u64;
+                pkt.ts = ts_rounded;
+            }
+        }
+    }
+    Ok((ecn_list, reader.position() >> 3))
+}
 fn callback(stx: *const nadatx, buf: gst::Buffer, is_push: u8) {
     trace!(
         CAT,
@@ -590,6 +586,8 @@ impl ObjectSubclass for nadatx {
             let ptr = NewController(150, 1500);
             ptr
         };
+
+        let at = AtomicUsize::new(0);
         let queue = Mutex::new(VecDeque::new());
         Self {
             srcpad,
@@ -597,6 +595,7 @@ impl ObjectSubclass for nadatx {
             rtcp_srcpad,
             rtcp_sinkpad,
             settings,
+            last_base: at,
             data: queue,
             controller
         }
