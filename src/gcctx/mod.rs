@@ -2,8 +2,6 @@ use glib::prelude::*;
 use crate::gst;
 
 mod imp;
-#[cfg(test)]
-mod twcc_test;
 
 // The public Rust wrapper type for our element
 glib::wrapper! {

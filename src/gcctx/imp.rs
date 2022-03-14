@@ -106,9 +106,6 @@ pub(crate) struct Feedback {
     ts: u64,
 }
 
-//        uint16_t sequence;
-//         uint64_t rxTimestampUs;
-//         uint8_t ecn;
 impl Feedback {
     pub fn new(ecn: u8, seq: u16) -> Feedback {
         Feedback {
@@ -160,6 +157,9 @@ impl Gcctx {
         {
             self.data.lock().unwrap().insert(seq as u32, buffer);
         }
+        let ts = time::SystemTime::now()
+            .duration_since(time::UNIX_EPOCH)
+            .expect("Time went backwards").as_millis() as u64;
         unsafe {
             self.with_controller(|c|  sender_cc_add_pace_packet(c, seq as u32, 0, size));
         }
@@ -354,78 +354,6 @@ impl Gcctx {
         );
         self.rtcp_sinkpad.peer_query(query)
     }
-}
-
-pub(crate) fn parse_twcc(data: &[u8]) -> (Vec<Feedback>, u64) {
-    let mut reader = BitReader::new(data);
-    let _v = reader.read_u8(2).unwrap();
-    assert_eq!(_v, 2);
-    let padding = reader.read_u8(1).unwrap();
-    let _fmt = reader.read_u8(5).unwrap();
-    //assert_eq!(_fmt, 15);
-    let _pt = reader.read_u8(8).unwrap();
-   // assert_eq!(_pt, 205);
-    let length = reader.read_u16(16).unwrap();
-    let ssrc_send = reader.read_u32(32).unwrap();
-    let ssrc_media = reader.read_u32(32).unwrap();
-    let base_seq = reader.read_u16(16).unwrap();
-    let packet_status = reader.read_u16(16).unwrap();
-    let ref_time = reader.read_u32(24).unwrap() << 6;
-    let fb_pkt_count = reader.read_u32(8).unwrap();
-
-    let mut ecn_list: Vec<Feedback> = Vec::with_capacity(packet_status as usize);
-
-    let mut recv_blocks = 0;
-    for _ in 0..packet_status {
-        let pkt_type = reader.read_u8(1).unwrap();
-        match pkt_type {
-            0 => {
-                let ecn = reader.read_u8(2).unwrap();
-                let cnt = reader.read_u16(13).unwrap();
-                for _ in 0..cnt {
-                    ecn_list.push(Feedback::new(ecn, base_seq));
-                }
-            }
-            1 => {
-                let sym_size = reader.read_u8(1).unwrap();
-                match sym_size {
-                    0 => {
-                        for _ in 0..14 {
-                            ecn_list.push(Feedback::new(reader.read_u8(1).unwrap(), base_seq));
-                        }
-                    }
-                    1 => {
-                        for _ in 1..7 {
-                            ecn_list.push(Feedback::new(reader.read_u8(2).unwrap(), base_seq));
-                        }
-                    }
-                    _ => panic!("unexpect sym_size {}", sym_size)
-                }
-            }
-            _ => panic!("unexpected pkt_type {}", pkt_type)
-        }
-    }
-    let mut cur_time = ref_time;
-    for x in ecn_list.iter_mut().filter(|t| t.ecn == 1 || t.ecn == 2) {
-        match x.ecn {
-            1 => {
-                let mut offset = reader.read_u8(8).unwrap();
-                // in millis, 250 µs -> 0.25ms -> 1 /4 -> >> 2
-                offset = offset >> 2;
-                cur_time = cur_time + offset as u32;
-                x.ts = cur_time as u64;
-            }
-            2 => {
-                let mut offset = reader.read_u16(16).unwrap();
-                // in millis, 250 µs -> 0.25s -> 1 /4 -> >> 2
-                offset = offset >> 2;
-                cur_time = cur_time + offset as u32;
-                x.ts = cur_time as u64;
-            }
-            _ => unreachable!()
-        }
-    }
-    (ecn_list, reader.position() >> 3)
 }
 
 fn on_send_packet(stx: *const Gcctx, id: u32, is_push: u8) {
@@ -970,36 +898,6 @@ extern "C" fn bitrate_change(trigger: *const u8, bitrate: u32, loss: u8, rtt: u3
     let bit = (((1-l/255) as f32)*(bitrate as f32)) as u32;
     guard.current_max_bitrate = bit;
     drop(guard);
-    /*
-	double now=Simulator::Now().GetSeconds();
-	SimSender *obj=static_cast<SimSender*>(trigger);
-	uint32_t overhead_bitrate, per_packets_second, payload_bitrate, video_bitrate_kbps;
-	double loss;
-	uint8_t header_len=sizeof(sim_header_t)+sizeof(sim_segment_t);
-	uint32_t packet_size_bit=(header_len+obj->m_segmentSize)*8;
-	per_packets_second = (bitrate + packet_size_bit - 1) / packet_size_bit;
-	overhead_bitrate = per_packets_second * header_len * 8;
-	payload_bitrate = bitrate - overhead_bitrate;
-	if(obj->m_lossFraction==0)
-	{
-		obj->m_lossFraction=fraction_loss;
-	}else
-	{
-		obj->m_lossFraction=(3*obj->m_lossFraction+fraction_loss)/4;
-	}
-	loss=(double)obj->m_lossFraction/255.0;
-	if (loss > 0.5)
-		loss = 0.5;
-	video_bitrate_kbps = (uint32_t)((1.0 - loss) * payload_bitrate) / 1000;
-	NS_LOG_INFO(std::to_string(now)<<" "<<video_bitrate_kbps<<" l "<<std::to_string(loss));
-	if(!obj->m_changeBitRate.IsNull())
-	{
-		//to prevent channel overuse
-		uint32_t protect_rate=video_bitrate_kbps;
-		obj->m_changeBitRate(protect_rate);//video_bitrate_kbps
-	}
-     */
-
 }
 
 extern "C" fn pace_send(handler: *const u8, id: u32, retrans: i32, size: usize, pad: i32) {

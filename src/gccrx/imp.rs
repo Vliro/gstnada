@@ -489,7 +489,7 @@ impl ElementImpl for Gccrx {
                 let clock = gst::SystemClock::obtain();
                 let wait_time = clock.time().unwrap() + gst::ClockTime::SECOND;
                 let mut clock_wait = self.clock_wait.lock().unwrap();
-                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(50000));
+                let timeout = clock.new_periodic_id(wait_time, gst::ClockTime::from_useconds(100000));
                 clock_wait.clock_id = Some(timeout.clone());
                 let element_weak = element.downgrade();
                 timeout
@@ -498,7 +498,6 @@ impl ElementImpl for Gccrx {
                             None => return,
                             Some(element) => element,
                         };
-
 
                         let lib_data = Gccrx::from_instance(&element);
                         let mut screamrx = lib_data.lib_data.lock().unwrap();

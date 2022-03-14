@@ -266,22 +266,7 @@ impl GccRx {
         unsafe {
             self.with_controller(|c| receiver_cc_heartbeat(c));
         }
-        /*let time_ntp = getTimeInNtp();
-        let rtcpFbInterval_ntp = self.getRtcpFbInterval();
-        if self.isFeedback(time_ntp)
-            && (self.checkIfFlushAck() || (time_ntp - self.getLastFeedbackT() > rtcpFbInterval_ntp))
-        {
-            trace!(CAT, "periodic_flush time_ntp {}, .getLastFeedbackT {},diff {} rtcpFbInterval_ntp {} averageReceivedRate {} ",
-                     time_ntp, self.getLastFeedbackT(), time_ntp - self.getLastFeedbackT(), rtcpFbInterval_ntp,  self.averageReceivedRate);
-            let mut bytes = Vec::with_capacity(300);
-            let isFeedback = self.createStandardizedFeedback(time_ntp, true, &mut bytes);
-            if isFeedback {
-                trace!(CAT, "periodic_flush ");
-                let buffer = gst::Buffer::from_mut_slice(bytes);
-                let rtcp_srcpad = &self.rtcp_srcpad.as_ref().unwrap().lock().unwrap();
-                rtcp_srcpad.push(buffer).unwrap();
-            }
-        }*/
+
     }
 }
 
