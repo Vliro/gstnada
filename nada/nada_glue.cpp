@@ -16,17 +16,20 @@ void FreeController(NadaController* c) {
     delete c;
 }
 
-bool OnFeedback(NadaController* controller, uint64_t nowUs,
+bool OnFeedback(NadaController* controller,
+                uint64_t now_us,
                 uint16_t sequence,
                 uint64_t rxTimestampUs,
                 uint8_t ecn) {
-    return controller->processFeedback(nowUs, sequence, rxTimestampUs, ecn);
+    //printf("On feedback seq: %d, timestamp: %lu , now_us: %lu \n", sequence, rxTimestampUs, now_us);
+    return controller->processFeedback(now_us, sequence, rxTimestampUs, ecn);
 }
 
 bool OnPacket(NadaController* controller, uint64_t txTimestampUs,
               uint16_t sequence,
               uint32_t size) {
-    return controller->processSendPacket(txTimestampUs, sequence, size);
+   //printf("On packet seq: %d, timestamp: %lu, size: %d \n", sequence, txTimestampUs, size);
+   return controller->processSendPacket(txTimestampUs, sequence, size);
 }
 
 float getBitrate(NadaController* controller, uint64_t nowUs) {

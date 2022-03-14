@@ -256,7 +256,6 @@ float NadaController::getBandwidth(uint64_t nowUs) const {
  * draft (see Section 4)
  */
 void NadaController::updateBw(uint64_t deltaUs) {
-
     int rmode = getRampUpMode();
     if (rmode == 0) {
         calcAcceleratedRampUp();
@@ -316,6 +315,7 @@ void NadaController::updateMetrics() {
 
 void NadaController::logStats(uint64_t nowUs, uint64_t deltaUs) const {
 
+    if (true) return;
     std::ostringstream os;
     os << std::fixed;
     os.precision(RMCAT_LOG_PRINT_PRECISION);
